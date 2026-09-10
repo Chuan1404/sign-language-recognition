@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sign Language Recognition</title>
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <section id="header">
+
+    </section>
+
+    <section id="body">
+        <div id="stream-area">
+            <img src="{{ url_for('video') }}" />
+            <div id="subscript-area">
+            </div>
+        </div>
+
+        <div id="control-area">
+            <div id="gross-list">
+                <ul>
+                    <li>school</li>
+                </ul>
+            </div>
+            <div id="buttons">
+                <button class="button">Start</button>
+                <button class="button">Stop</button>
+            </div>
+        </div>
+
+    </section>
+
+    <section id="footer">
+    </section>
+</body>
+</html>

@@ -1,0 +1,63 @@
+* {
+    padding: 0;
+    margin: 0;
+    box-sizing: border-box;
+}
+
+#body {
+    display: flex;
+}
+
+#stream-area {
+    position: relative;
+    width: 80vw;
+    height: 90vh;
+    background: black;
+}
+
+#stream-area img {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+
+    width: 100%;
+    height: 100%;
+}
+
+#stream-area #subscript-area {
+    width: 100%;
+    height: 10vh;
+    background: antiquewhite;
+
+    position: absolute;
+    top: 100%;
+    left: 0;
+}
+
+#control-area {
+    position: relative;
+    width: 20vw;
+    height: 100vh;
+}
+
+#buttons {
+    width: 100%;
+    height: 10vh;
+    background: aquamarine;
+
+    display: flex;
+    justify-content: center;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+
+    padding: 20px;
+}
+
+.button {
+    cursor: pointer;
+    display: block;
+    padding: 10px 20px;
+    margin: 0 20px;
+}

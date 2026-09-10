@@ -65,31 +65,32 @@ class FusionComponent:
 
         return fused_flat
 
-    def fuse_follow_hand(self, pose_feature, left_feature, right_feature):
-        T = pose_feature.shape[0]
-
-        pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
-        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
+    def fuse_follow_hand(self, pose_feature, left_feature, right_feature, use_pose=True):
+        T = left_feature.shape[0]
 
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
-
-        left_hand = np.concatenate([pose[:, ::2, :], left], axis=1)
-        right_hand = np.concatenate([pose[: ,1::2, :], right], axis=1)
-
-        normalize_left_hand = self.average_hand(left_hand)
-        normalize_right_hand = self.average_hand(right_hand)
+        left_wrist = left[:, 0:1, :].copy()
+        right_wrist = right[:, 0:1, :].copy()
 
         scale = np.linalg.norm(
-            normalize_left_hand[:, 0] - normalize_right_hand[:, 0],
+            left_wrist[:, 0] - right_wrist[:, 0],
             axis=-1,
             keepdims=True
         )
-
         scale = np.where(scale > _EPS, scale, 1.0)
-
         scale = scale[:, np.newaxis, :]
+
+        if use_pose:
+            pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
+            pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
+
+            left = np.concatenate([pose[:, ::2, :], left], axis=1)
+            right = np.concatenate([pose[:, 1::2, :], right], axis=1)
+
+        normalize_left_hand = self.average_hand(left)
+        normalize_right_hand = self.average_hand(right)
 
         normalize_left_hand = normalize_left_hand / scale
         normalize_right_hand = normalize_right_hand / scale
@@ -102,6 +103,7 @@ class FusionComponent:
 
     def average_hand(self, hand_feature):
         T = hand_feature.shape[0]
+
         present_mask = ~np.all(hand_feature == 0, axis=-1)
 
         valid_count = present_mask.sum(axis=1, keepdims=True)
@@ -116,3 +118,23 @@ class FusionComponent:
         normalize_hand_feature = normalize_hand_feature * present_mask[..., None]
 
         return  normalize_hand_feature
+
+    def normalize_by_wrist(self, hand_feature, wrist=None):
+        T = hand_feature.shape[0]
+
+
+        if wrist is None:
+            wrist = hand_feature[:, 0:1, :]
+
+        present_mask = ~np.all(hand_feature == 0, axis=-1)  # [T, N]
+
+        wrist_present = ~np.all(wrist == 0, axis=-1)  # [T, 1]
+        valid_mask = present_mask & wrist_present  # [T, N]
+
+        normalize_hand_feature = hand_feature - wrist
+
+        normalize_hand_feature = (
+                normalize_hand_feature * valid_mask[..., None]
+        )
+
+        return normalize_hand_feature

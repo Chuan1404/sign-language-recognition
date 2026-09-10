@@ -1,4 +1,5 @@
 import os
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import json
@@ -16,6 +17,18 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 LABELS_PATH = os.path.join(ROOT, "datasets", "annotations", "wlasl_flat.json")
 
+LIPS = [
+    61, 146, 91, 181, 84, 17,
+    314, 405, 321, 375, 291,
+    185, 40, 39, 37, 0,
+    267, 269, 270, 409,
+    78, 95, 88, 178, 87,
+    14, 317, 402, 318,
+    324, 308, 191, 80,
+    81, 82, 13,
+    312, 311, 310, 415
+]
+
 with open(LABELS_PATH, "r", encoding="utf-8") as f:
     label_entries = json.load(f)
 
@@ -26,7 +39,6 @@ for entry in tqdm(label_entries, total=len(label_entries)):
     hand_detection = HandDetection(min_hand_detection_confidence=0.6)
     pose_detection = PoseDetection()
     face_detection = FaceDetection()
-
 
     video_id = entry["video_id"]
     gloss = entry["gloss"]
@@ -125,10 +137,9 @@ for entry in tqdm(label_entries, total=len(label_entries)):
         pose_coords = np.zeros((33, 3), dtype=np.float32)
 
         if (
-            detection_pose_results.pose_landmarks is not None
-            and len(detection_pose_results.pose_landmarks) > 0
+                detection_pose_results.pose_landmarks is not None
+                and len(detection_pose_results.pose_landmarks) > 0
         ):
-
             pose_landmarks = detection_pose_results.pose_landmarks[0]
 
             pose_coords = np.array(
@@ -149,18 +160,6 @@ for entry in tqdm(label_entries, total=len(label_entries)):
                 and len(detection_face_results.face_landmarks) > 0
         ):
             face_landmarks = detection_face_results.face_landmarks[0]
-
-            LIPS = [
-                61, 146, 91, 181, 84, 17,
-                314, 405, 321, 375, 291,
-                185, 40, 39, 37, 0,
-                267, 269, 270, 409,
-                78, 95, 88, 178, 87,
-                14, 317, 402, 318,
-                324, 308, 191, 80,
-                81, 82, 13,
-                312, 311, 310, 415
-            ]
 
             lip_coords = np.array(
                 [
@@ -242,7 +241,6 @@ for entry in tqdm(label_entries, total=len(label_entries)):
         pose_features
     )
 
-
     # --------------------------------------------------
     # SAVE
     # --------------------------------------------------
@@ -288,12 +286,12 @@ for entry in tqdm(label_entries, total=len(label_entries)):
     # WLASLLandmarksDataset still reads the main label from the labels
     # JSON, not from this file, during training
     with open(
-        os.path.join(
-            dir_name,
-            "gloss.txt"
-        ),
-        "w",
-        encoding="utf-8"
+            os.path.join(
+                dir_name,
+                "gloss.txt"
+            ),
+            "w",
+            encoding="utf-8"
     ) as f:
         f.write(gloss.strip())
 

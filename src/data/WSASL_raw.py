@@ -99,37 +99,5 @@ class WLASLLandmarksDataset(Dataset):
         # features = np.concatenate([pose_features, left_features, right_features], axis=-1)
         # hand_normalize_features = self.normalize_features(torch.tensor(hand_features))
 
-        features = self.fusion_component.fuse_follow_hand(pose_features, left_features, right_features)
+        features = self.fusion_component.fuse_follow_hand(pose_features, left_features, right_features, use_pose=False)
         return features, label_id
-
-    def normalize_features(self, hand_features):
-        T = hand_features.shape[0]
-
-        x = hand_features.reshape(T, 2, 21, 3).clone()
-        x = x[..., :2]
-
-        left_wrist = x[:, 0, 0:1, :]  # (T,1,2)
-        right_wrist = x[:, 1, 0:1, :]
-        
-        x[:, 0] = x[:, 0] - left_wrist
-        x[:, 1] = x[:, 1] - right_wrist
-
-        valid_left = (x[:, 0].abs().sum(dim=(1, 2)) > 1e-5)
-        valid_right = (x[:, 1].abs().sum(dim=(1, 2)) > 1e-5)
-
-        scale_left = torch.norm(x[valid_left, 0], dim=-1).mean() if valid_left.any() else torch.tensor(1.0)
-        scale_right = torch.norm(x[valid_right, 1], dim=-1).mean() if valid_right.any() else torch.tensor(1.0)
-
-        if valid_left.any() and valid_right.any():
-            scale = (scale_left + scale_right) / 2.0
-        elif valid_left.any():
-            scale = scale_left
-        else:
-            scale = scale_right
-
-        scale = torch.clamp(torch.tensor(scale), min=1e-6)
-
-        x = x / scale
-        x = x.reshape(T, -1)
-
-        return x

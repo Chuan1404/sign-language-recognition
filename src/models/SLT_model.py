@@ -1,17 +1,11 @@
-from typing import Union, Callable, Tuple, Any, Optional, Dict
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.modules.module import T
-from torch.utils.hooks import RemovableHandle
 
 from src.models.positional_encoding import PositionalEncoding
 
 from config import _N_POSE, _NUM_NODE, _COORD_DIM, _N_HAND
 from src.models.spatial_graph import GrapConvBlock, build_adjacency, GCN_Block
-
-from src.models.spatial_graph import (_build_hand_group_edges)
 
 class ClassificationOutput:
 
@@ -19,11 +13,13 @@ class ClassificationOutput:
         self.loss = loss
         self.logits = logits
 
+
 def masked_mean_pool(x, video_mask):
     mask = video_mask.unsqueeze(-1).float()  # (B, T, 1)
     summed = (x * mask).sum(dim=1)  # (B, D)
     counts = mask.sum(dim=1).clamp(min=1.0)  # (B, 1) — avoid /0
     return summed / counts
+
 
 class SignLanguageTranslatorV1(nn.Module):
     def __init__(
@@ -32,7 +28,7 @@ class SignLanguageTranslatorV1(nn.Module):
             hidden_dim=512,
             num_encoder_layers=6,
             nhead=8,
-            dim_feedforward=512*4,
+            dim_feedforward=512 * 4,
             dropout=0.1,
             max_seq_len=5000,
             num_classes=2000
@@ -103,14 +99,16 @@ class SignLanguageTranslatorV1(nn.Module):
         if top_k == 1:
             return logits.argmax(dim=-1)
 
+
 class ISLR_V1(nn.Module):
     def __init__(
             self,
-            input_dim=_NUM_NODE * _COORD_DIM,
+            # input_dim=_NUM_NODE * _COORD_DIM | (42 * _COORD_DIM),
+            input_dim=42 * _COORD_DIM,
             hidden_dim=256,
             num_encoder_layers=6,
             nhead=8,
-            dim_feedforward=512*4,
+            dim_feedforward=256 * 4,
             dropout=0.1,
             max_seq_len=5000,
             num_classes=2000
@@ -183,13 +181,14 @@ class ISLR_V1(nn.Module):
         if top_k == 1:
             return logits.argmax(dim=-1)
 
+
 class SimpleTCN(nn.Module):
     def __init__(self, channels, kernel_size=9):
         super().__init__()
         pad = (kernel_size - 1) // 2
         self.conv = nn.Conv2d(channels, channels,
-                               kernel_size=(kernel_size, 1),
-                               padding=(pad, 0))
+                              kernel_size=(kernel_size, 1),
+                              padding=(pad, 0))
         self.bn = nn.BatchNorm2d(channels)
         self.act = nn.GELU()
 
@@ -198,6 +197,7 @@ class SimpleTCN(nn.Module):
         x = x.permute(0, 3, 1, 2)
         x = self.act(self.bn(self.conv(x)))
         return x.permute(0, 2, 3, 1)
+
 
 class DecoupledGCN(nn.Module):
 
@@ -210,29 +210,29 @@ class DecoupledGCN(nn.Module):
         self.phi = nn.Linear(in_channels, out_channels)
 
         base_adjacency = base_adjacency.float()
-        self.register_buffer("I", torch.eye(self.V)) # (1, N, N)
+        self.register_buffer("I", torch.eye(self.V))  # (1, N, N)
 
         self.A_in = nn.Parameter(
             base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3
-        ) # (p, N, N)
+        )  # (p, N, N)
 
         self.A_out = nn.Parameter(
             base_adjacency.t().unsqueeze(0).repeat(self.p, 1, 1) * 1e-3
-        ) # (p, N, N)
+        )  # (p, N, N)
 
     def _raw_A(self):
         return self.I.unsqueeze(0) + self.A_in + self.A_out
 
     def _normalized_A(self, A_raw):
-        deg = A_raw.sum(-1).clamp(min=1e-6)          # (p, V)
+        deg = A_raw.sum(-1).clamp(min=1e-6)  # (p, V)
         d_inv_sqrt = deg.pow(-0.5)
-        D_inv_sqrt = torch.diag_embed(d_inv_sqrt)     # (p, V, V)
+        D_inv_sqrt = torch.diag_embed(d_inv_sqrt)  # (p, V, V)
 
-        return D_inv_sqrt @ A_raw @ D_inv_sqrt        # (p, V, V)
+        return D_inv_sqrt @ A_raw @ D_inv_sqrt  # (p, V, V)
 
     def forward(self, x):
-        feat = self.phi(x)                # (B, T, V, C_out)
-        A_raw = self._raw_A()             # (p, V, V)
+        feat = self.phi(x)  # (B, T, V, C_out)
+        A_raw = self._raw_A()  # (p, V, V)
         A_norm = self._normalized_A(A_raw)
 
         out = 0
@@ -240,6 +240,7 @@ class DecoupledGCN(nn.Module):
             out = out + torch.einsum('vw,btwc->btvc', A_norm[k], feat)
         out = out / self.p
         return out, A_raw
+
 
 class SelfPacingDroppingBlock(nn.Module):
     def __init__(self, in_ch, out_ch, num_nodes, base_adjacency,
@@ -253,6 +254,7 @@ class SelfPacingDroppingBlock(nn.Module):
         feat, A_raw = self.gcn(x)
         feat = self.tcn(feat)
         return feat, None
+
 
 class SPDStack(nn.Module):
 
@@ -284,6 +286,7 @@ class SPDStack(nn.Module):
             feat, _ = block(feat)
 
         return feat
+
 
 class ISLR_V2(nn.Module):
     def __init__(
@@ -330,6 +333,7 @@ class ISLR_V2(nn.Module):
 
         return logits, loss
 
+
 class ISLR_V3(nn.Module):
     def __init__(self,
                  input_dim=_NUM_NODE * _COORD_DIM,
@@ -338,7 +342,7 @@ class ISLR_V3(nn.Module):
                  hidden_dim=512,
                  num_encoder_layers=6,
                  nhead=8,
-                 dim_feedforward=512*4,
+                 dim_feedforward=512 * 4,
                  dropout=0.1,
                  max_seq_len=1000):
 
@@ -353,7 +357,8 @@ class ISLR_V3(nn.Module):
         self.register_buffer('adjacency_matrix', build_adjacency())
 
         self.gcn_stack = nn.ModuleList([
-            GrapConvBlock(channels[i], channels[i+1], self.num_nodes, base_adjacency=self.adjacency_matrix) for i in range(len(channels) -1)
+            GrapConvBlock(channels[i], channels[i + 1], self.num_nodes, base_adjacency=self.adjacency_matrix) for i in
+            range(len(channels) - 1)
         ])
 
         self.input_projection = nn.Sequential(
@@ -394,7 +399,7 @@ class ISLR_V3(nn.Module):
             nn.LayerNorm(d_model)
         )
 
-        self.fused = nn.Linear(2*d_model, d_model)
+        self.fused = nn.Linear(2 * d_model, d_model)
 
     def encode_gcn(self, features, video_mask):
         B, T, _ = features.shape
@@ -445,8 +450,9 @@ class ISLR_V3(nn.Module):
 
         return logits, loss
 
+
 class FrameAttention(nn.Module):
-    def __init__(self, input_dim, hidden_dim = 256, dropout=0.1):
+    def __init__(self, input_dim, hidden_dim=256, dropout=0.1):
         super().__init__()
         self.d_out = hidden_dim
         self.dropout = nn.Dropout(dropout)
@@ -456,9 +462,9 @@ class FrameAttention(nn.Module):
         self.V = nn.Linear(input_dim, hidden_dim)
 
         self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim*4),
+            nn.Linear(hidden_dim, hidden_dim * 4),
             nn.GELU(),
-            nn.Linear(hidden_dim*4, hidden_dim),
+            nn.Linear(hidden_dim * 4, hidden_dim),
             nn.LayerNorm(hidden_dim),
         )
 
@@ -499,7 +505,8 @@ class ISLR_V4(nn.Module):
 
         self.gcn_block = nn.ModuleList([
             # GrapConvBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in range(len(channels) - 1)
-            GCN_Block(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in range(len(channels) - 1)
+            GCN_Block(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in
+            range(len(channels) - 1)
         ])
 
         self.attn_block = nn.ModuleList([
@@ -520,7 +527,6 @@ class ISLR_V4(nn.Module):
         # features = self.frame_attention(features, video_mask)
         for block in self.attn_block:
             features = block(features, video_mask)
-
 
         # B T N C -> B N T C
         # features = features.transpose(1, 2)

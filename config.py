@@ -27,8 +27,5 @@ _N_HAND = 21
 _NUM_NODE = int(_N_POSE + _N_HAND * 2)
 _COORD_DIM = 2
 
-# 1. Hand shape
-# 2. Hand position
-# 3. Hand orientation
-# 4. Movement trajectory
-# 5. Temporal evolution
+# WEB
+WINDOW_SIZE = 64

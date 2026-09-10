@@ -1,6 +1,5 @@
 import os
 
-
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -21,7 +20,7 @@ DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = f"contest_100_v3.pt"
+MODEL_NAME = f"contest_100_v1.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8

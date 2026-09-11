@@ -16,7 +16,7 @@ from config import ROOT
 import json
 
 
-DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features")
+DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")
@@ -92,8 +92,6 @@ def main(args):
     best = 0
     best_loss = 100
     no_improve = 0
-
-    betas = (0.9, 0.98),
 
     for epoch in range(EPOCHS):
         print(f"Epoch {epoch}")

@@ -23,7 +23,7 @@ def load_model(model_path, num_classes=100):
 
 def predict(model, features, video_mask):
     with torch.no_grad():
-        logits, loss = model(features, video_mask=video_mask)
+            logits, loss = model(features, video_mask=video_mask)
     predicted_class = torch.argmax(logits, dim=1).item()
 
     return predicted_class

@@ -2,37 +2,228 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sign Language Recognition</title>
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SignLens — Sign Language Recognition</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-    <section id="header">
 
-    </section>
+<!-- ═══════════════════════ HEADER ═══════════════════════ -->
+<header id="header">
+    <div class="header-left">
+        <div class="logo">
+            <span class="logo-icon">&#9753;</span>
+            <span class="logo-text">SignLens</span>
+        </div>
+        <span class="header-subtitle">Real-time ASL Recognition</span>
+    </div>
+    <div class="header-right">
+        <div id="status-badge" class="status-badge status-idle">
+            <span class="status-dot"></span>
+            <span class="status-label">Idle</span>
+        </div>
+    </div>
+</header>
 
-    <section id="body">
+<!-- ═══════════════════════ MAIN ═════════════════════════ -->
+<main id="body">
+
+    <!-- ─── Col 1: Transcript ─── -->
+    <div id="transcript-panel">
+        <div class="sidebar-header">
+            <h2 class="sidebar-title">Transcript</h2>
+            <div class="header-actions">
+                <button id="copy-btn" class="icon-btn" title="Copy text">&#128203;</button>
+                <button id="clear-btn" class="icon-btn" title="Clear text">&#128465;</button>
+            </div>
+        </div>
+        <div id="subscript-area">
+            <p id="subtitle-line" class="subtitle-text">
+                <span class="placeholder-text">Waiting for signs...</span>
+            </p>
+        </div>
+    </div>
+
+    <!-- ─── Col 2: Camera stream ─── -->
+    <div id="stream-column">
         <div id="stream-area">
-            <img src="{{ url_for('video') }}" />
-            <div id="subscript-area">
-            </div>
+            <img src="{{ url_for('video') }}" alt="Camera feed" />
+        </div>
+    </div>
+
+    <!-- ─── Col 3: Gloss list ─── -->
+    <aside id="control-area">
+
+        <div class="sidebar-header">
+            <h2 class="sidebar-title">Gloss Library</h2>
+            <span class="gloss-count" id="gloss-count">0 signs</span>
         </div>
 
-        <div id="control-area">
-            <div id="gross-list">
-                <ul>
-                    <li>school</li>
-                </ul>
-            </div>
-            <div id="buttons">
-                <button class="button">Start</button>
-                <button class="button">Stop</button>
-            </div>
+        <!-- Search -->
+        <div class="search-wrapper">
+            <span class="search-icon">&#128269;</span>
+            <input type="text" id="gloss-search" placeholder="Search signs..." autocomplete="off" />
         </div>
 
-    </section>
+        <!-- Gloss list -->
+        <div id="gross-list">
+            <ul id="gloss-ul">
+                <li class="gloss-loading">Loading signs...</li>
+            </ul>
+        </div>
 
-    <section id="footer">
-    </section>
+        <!-- Sidebar footer -->
+        <div class="sidebar-footer">
+            <p class="footer-tip">
+                <span>&#128161;</span>
+                Click any sign to preview the reference video
+            </p>
+        </div>
+
+    </aside>
+
+</main>
+
+<!-- ═══════════════════ VIDEO POPUP ════════════════════════ -->
+<div id="video-overlay" class="hidden">
+    <div id="video-popup">
+        <div class="popup-header">
+            <p id="popup-gloss-label"></p>
+            <button id="close-popup" aria-label="Close">&times;</button>
+        </div>
+        <div class="popup-video-wrapper">
+            <video id="popup-video" controls autoplay loop>
+                <source id="popup-video-src" src="" type="video/mp4">
+            </video>
+        </div>
+        <p class="popup-hint">Reference sign from the WLASL dataset</p>
+    </div>
+</div>
+
+<!-- ═══════════════════════ SCRIPT ═══════════════════════ -->
+<script>
+// ── Gloss list ──────────────────────────────────────────────
+const glossUl      = document.getElementById('gloss-ul');
+const glossSearch  = document.getElementById('gloss-search');
+const glossCount   = document.getElementById('gloss-count');
+const overlay      = document.getElementById('video-overlay');
+const popupVideo   = document.getElementById('popup-video');
+const popupSrc     = document.getElementById('popup-video-src');
+const popupLabel   = document.getElementById('popup-gloss-label');
+const closeBtn     = document.getElementById('close-popup');
+const subscript    = document.getElementById('subscript-area');
+const subtitleLine = document.getElementById('subtitle-line');
+const statusBadge  = document.getElementById('status-badge');
+const statusLabel  = statusBadge.querySelector('.status-label');
+const copyBtn      = document.getElementById('copy-btn');
+const clearBtn     = document.getElementById('clear-btn');
+
+let allGlosses = [];
+
+async function loadGlosses() {
+    try {
+        const res  = await fetch('/glosses');
+        const data = await res.json();
+        allGlosses = data.glosses || [];
+        glossCount.textContent = allGlosses.length + ' signs';
+        renderGlosses(allGlosses);
+    } catch (e) {
+        glossUl.innerHTML = '<li class="gloss-error">Failed to load signs</li>';
+    }
+}
+
+function renderGlosses(list) {
+    glossUl.innerHTML = '';
+    if (!list.length) {
+        glossUl.innerHTML = '<li class="gloss-empty">No results</li>';
+        return;
+    }
+    const frag = document.createDocumentFragment();
+    list.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'gloss-item';
+        li.innerHTML = `<span class="gloss-name">${item.gloss}</span>
+                        <span class="gloss-play">&#9654;</span>`;
+        li.addEventListener('click', () => openPopup(item.gloss, item.video_id));
+        frag.appendChild(li);
+    });
+    glossUl.appendChild(frag);
+}
+
+glossSearch.addEventListener('input', () => {
+    const q = glossSearch.value.trim().toLowerCase();
+    renderGlosses(q ? allGlosses.filter(g => g.gloss.includes(q)) : allGlosses);
+});
+
+function openPopup(gloss, videoId) {
+    popupLabel.textContent = gloss;
+    popupSrc.src = '/video_file/' + videoId;
+    popupVideo.load();
+    popupVideo.play();
+    overlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closePopup() {
+    overlay.classList.add('hidden');
+    popupVideo.pause();
+    popupSrc.src = '';
+    document.body.style.overflow = '';
+}
+
+closeBtn.addEventListener('click', closePopup);
+overlay.addEventListener('click', e => { if (e.target === overlay) closePopup(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePopup(); });
+
+loadGlosses();
+
+// ── Transcript & status polling ────────────────────────────
+let lastWords = [];
+
+async function fetchPredictedText() {
+    try {
+        const res  = await fetch('/predicted_text');
+        const data = await res.json();
+        const words = data.words || [];
+
+        if (JSON.stringify(words) !== JSON.stringify(lastWords)) {
+            lastWords = words;
+            if (words.length === 0) {
+                subtitleLine.innerHTML = '<span class="placeholder-text">Start signing to see text here...</span>';
+            } else {
+                subtitleLine.innerHTML = words.map(w =>
+                    `<span class="word-chip">${w}</span>`
+                ).join(' ');
+                // Scroll to latest word
+                subscript.scrollTop = subscript.scrollHeight;
+            }
+        }
+    } catch (e) { /* ignore */ }
+}
+
+// Copy button
+copyBtn?.addEventListener('click', () => {
+    const text = lastWords.join(' ');
+    if (text) {
+        navigator.clipboard.writeText(text).then(() => {
+            copyBtn.innerHTML = '&#10003;';
+            setTimeout(() => { copyBtn.innerHTML = '&#128203;'; }, 1500);
+        });
+    }
+});
+
+// Clear button (client-side + clears server state via fetch)
+clearBtn?.addEventListener('click', async () => {
+    try { await fetch('/clear_text', { method: 'POST' }); } catch(e) {}
+    lastWords = [];
+    subtitleLine.innerHTML = '<span class="placeholder-text">Start signing to see text here...</span>';
+});
+
+setInterval(fetchPredictedText, 800);
+fetchPredictedText();
+</script>
 </body>
 </html>

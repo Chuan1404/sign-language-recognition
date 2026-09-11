@@ -17,9 +17,9 @@ class FusionComponent:
 
         T = pose_feature.shape[0]
 
-        pose = pose_feature.reshape(T, 33, 3).copy()
-        left = left_feature.reshape(T, 21, 3).copy()
-        right = right_feature.reshape(T, 21, 3).copy()
+        pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
+        left = left_feature.reshape(T, 21, _COORD_DIM).copy()
+        right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
         all_points = np.concatenate([pose, left, right],axis=1)  # (T, N, 2)
 
@@ -35,7 +35,7 @@ class FusionComponent:
 
         average_point = (valid_points.sum(axis=1)/ np.maximum(valid_count, 1))
 
-        average_point = average_point.reshape(T, 1, 3)
+        average_point = average_point.reshape(T, 1, _COORD_DIM)
 
         scale = np.linalg.norm(
             pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
@@ -46,8 +46,8 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
 
         scale = scale[:, np.newaxis, :]
-        # root = pose[:, np.newaxis, _NOSE_IDX]
-        root = average_point
+        root = pose[:, np.newaxis, _NOSE_IDX]
+        # root = average_point
 
         pose = (pose - root) / scale
         left = (left - root) / scale

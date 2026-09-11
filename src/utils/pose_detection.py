@@ -21,42 +21,79 @@ class PoseDetection:
 
         return detection_result
 
-    def draw_landmarks_on_image(self, rgb_image, detection_result):
+    def draw_landmarks_on_image(self, rgb_image, detection_result, remove_pose_idx=None):
         pose_landmarks_list = detection_result.pose_landmarks
         annotated_image = np.copy(rgb_image)
+
         h, w, _ = annotated_image.shape
 
         scale = w / 640.0
         radius = max(1, int(2 * scale))
         thickness = max(1, int(1 * scale))
 
-        # Phóng to các điểm
+        remove_pose_idx = set(remove_pose_idx or [])
+
+        # Style mặc định
         landmark_style = mp_drawing_utils.DrawingSpec(
-            color=(0, 0, 255),  # đỏ
+            color=(0, 0, 255),
             thickness=thickness,
-            circle_radius=radius  # <-- tăng kích thước điểm
+            circle_radius=radius
         )
 
-        # Đường nối
         connection_style = mp_drawing_utils.DrawingSpec(
             color=(0, 255, 0),
-            thickness=thickness  # <-- tăng độ dày đường
+            thickness=thickness
         )
 
-        # for landmark_style in pose_landmark_style.values():
-        #     landmark_style.thickness = 1
-        #     landmark_style.circle_radius = 1
-        pose_connection_style = mp_drawing_utils.DrawingSpec(color=(0, 255, 0), thickness=1)
-
         for pose_landmarks in pose_landmarks_list:
-            num_landmarks = len(pose_landmarks.landmark) if hasattr(pose_landmarks, 'landmark') else len(pose_landmarks)
-            conns = vision.PoseLandmarksConnections.POSE_LANDMARKS if num_landmarks >= 33 else None
+
+            # MediaPipe Tasks:
+            # pose_landmarks là list[NormalizedLandmark]
+            num_landmarks = len(pose_landmarks)
+
+            all_conns = (
+                vision.PoseLandmarksConnections.POSE_LANDMARKS
+                if num_landmarks >= 33
+                else None
+            )
+
+            # Tạo drawing spec cho TẤT CẢ landmark
+            landmark_drawing_spec = {}
+
+            for idx in range(num_landmarks):
+
+                if idx in remove_pose_idx:
+                    # Không vẽ landmark này
+                    landmark_drawing_spec[idx] = mp_drawing_utils.DrawingSpec(
+                        color=(0, 0, 0),
+                        thickness=0,
+                        circle_radius=0,
+                    )
+
+                else:
+                    landmark_drawing_spec[idx] = mp_drawing_utils.DrawingSpec(
+                        color=(0, 255, 0),
+                        thickness=thickness,
+                        circle_radius=radius,
+                    )
+
+            # Chỉ giữ connection khi cả 2 đầu đều không bị remove
+            conns = None
+
+            if all_conns is not None:
+                conns = [
+                    conn
+                    for conn in all_conns
+                    if conn.start not in remove_pose_idx
+                       and conn.end not in remove_pose_idx
+                ]
 
             mp_drawing_utils.draw_landmarks(
                 image=annotated_image,
                 landmark_list=pose_landmarks,
                 connections=conns,
-                landmark_drawing_spec=landmark_style,
-                connection_drawing_spec=connection_style,)
+                landmark_drawing_spec=landmark_drawing_spec,
+                connection_drawing_spec=connection_style,
+            )
 
         return annotated_image

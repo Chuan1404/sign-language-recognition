@@ -32,8 +32,8 @@ class SkeletonAugmentor:
         T = fused.shape[0]
         coords = fused.reshape(T, NUM_JOINTS, _COORD_DIM).copy()
 
-        if np.random.rand() < self.mirror_prob:
-            coords = self._mirror(coords)
+        # if np.random.rand() < self.mirror_prob:
+        #     coords = self._mirror(coords)
 
         coords = self._rotate(coords)
 

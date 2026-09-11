@@ -20,7 +20,6 @@ def masked_mean_pool(x, video_mask):
     counts = mask.sum(dim=1).clamp(min=1.0)  # (B, 1) — avoid /0
     return summed / counts
 
-
 class SignLanguageTranslatorV1(nn.Module):
     def __init__(
             self,
@@ -103,12 +102,12 @@ class SignLanguageTranslatorV1(nn.Module):
 class ISLR_V1(nn.Module):
     def __init__(
             self,
-            # input_dim=_NUM_NODE * _COORD_DIM | (42 * _COORD_DIM),
-            input_dim=42 * _COORD_DIM,
-            hidden_dim=256,
+            input_dim=_NUM_NODE * _COORD_DIM,
+            # input_dim=42 * _COORD_DIM,
+            hidden_dim=512,
             num_encoder_layers=6,
             nhead=8,
-            dim_feedforward=256 * 4,
+            dim_feedforward=512 * 4,
             dropout=0.1,
             max_seq_len=5000,
             num_classes=2000

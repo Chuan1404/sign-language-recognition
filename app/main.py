@@ -7,14 +7,14 @@ from src import FusionComponent, PoseDetection
 import sys, numpy as np, cv2 as cv, torch, json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import WINDOW_SIZE, ROOT, _COORD_DIM, FRAME_H, FRAME_W, _REMOVE_POSE_IDX, BACKSPACE_ZONE, CLEAR_ZONE
+from config import ROOT, _COORD_DIM, FRAME_H, FRAME_W, _REMOVE_POSE_IDX, BACKSPACE_ZONE, CLEAR_ZONE
 from flask import Flask, render_template, Response, jsonify, send_file, request
 from src.utils import HandDetection
 
 _ZONE_ANCHOR_POSE_IDX = (11, 12)
 
-LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
-MODEL_PATH = os.path.join(ROOT, 'outputs', 'models', 'contest_100_v1.pt')
+LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
+MODEL_PATH = os.path.join(ROOT, 'outputs', 'models', 'contest_2000_v1.pt')
 WLASL_VIDEO_DIR = os.path.join(ROOT, "datasets", "raw", "WLASL", "videos")
 
 hand_detection = HandDetection()
@@ -166,7 +166,7 @@ def generate_frames():
                     left_arr = np.stack(left_hand_buf)   # (T, 21, 3)
                     right_arr = np.stack(right_hand_buf)  # (T, 21, 3)
 
-                    fused = fusion.fuse(
+                    fused = fusion.fuse_seperate_pose_and_hand(
                         pose_feature=pose_arr,
                         left_feature=left_arr,
                         right_feature=right_arr,

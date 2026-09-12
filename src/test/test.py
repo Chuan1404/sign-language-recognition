@@ -25,13 +25,12 @@ TOP_K       = 5
 SEED        = 42
 
 
-FEATURE_DIR    = os.path.join(ROOT, "datasets", "processed", "wlasl_features")
-ANNOTATION_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
+FEATURE_DIR    = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
+ANNOTATION_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
 SAVE_DIR       = os.path.join(ROOT, "outputs", "models")
-MODEL_PATH     = os.path.join(SAVE_DIR, "v3_WLASL100_26_08_22.pt")
+MODEL_PATH     = os.path.join(SAVE_DIR, "contest_2000_v1.pt")
 
 fusion_component = FusionComponent()
-
 
 def evaluate(model, loader, idx2gloss, top_k=5):
     """Tính top-1, top-k accuracy và thu thập các dự đoán sai để phân tích."""
@@ -52,7 +51,6 @@ def evaluate(model, loader, idx2gloss, top_k=5):
 
             logits, loss = model(
                 features,
-                # hand_normalize_features,
                 labels=labels,
                 video_mask=video_mask
             )
@@ -109,6 +107,7 @@ def print_most_confused(wrong_preds, n=10):
 def main():
     with open(os.path.join(ANNOTATION_DIR, "gloss2idx.json"), "r") as f:
         gloss2idx = json.load(f)
+
     idx2gloss = {v: k for k, v in gloss2idx.items()}
     num_classes = len(gloss2idx)
 

@@ -103,12 +103,11 @@ class ISLR_V1(nn.Module):
     def __init__(
             self,
             input_dim=_NUM_NODE * _COORD_DIM,
-            # input_dim=42 * _COORD_DIM,
             hidden_dim=512,
             num_encoder_layers=6,
             nhead=8,
             dim_feedforward=512 * 4,
-            dropout=0.1,
+            dropout=0.2,
             max_seq_len=5000,
             num_classes=2000
     ):

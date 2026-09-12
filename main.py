@@ -17,15 +17,15 @@ import json
 
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
-LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
+LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = f"contest_100_v1.pt"
+MODEL_NAME = f"contest_2000_v1_2.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
 EPOCHS = 100
-TOP_K = 5
+TOP_K = 2
 PATIENCE = 10
 
 def default_args():
@@ -51,8 +51,8 @@ def main(args):
 
     feature, _ = base_train[0]
 
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    train_dataset = base_train
+    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    # train_dataset = base_train
     val_dataset = base_val
 
     train_loader = DataLoader(

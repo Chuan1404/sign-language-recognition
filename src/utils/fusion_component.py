@@ -17,9 +17,9 @@ class FusionComponent:
 
         T = pose_feature.shape[0]
 
-        pose = pose_feature.reshape(T, 33, 3).copy()
-        left = left_feature.reshape(T, 21, 3).copy()
-        right = right_feature.reshape(T, 21, 3).copy()
+        pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
+        left = left_feature.reshape(T, 21, _COORD_DIM).copy()
+        right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
         all_points = np.concatenate([pose, left, right],axis=1)  # (T, N, 2)
 
@@ -35,7 +35,7 @@ class FusionComponent:
 
         average_point = (valid_points.sum(axis=1)/ np.maximum(valid_count, 1))
 
-        average_point = average_point.reshape(T, 1, 3)
+        average_point = average_point.reshape(T, 1, _COORD_DIM)
 
         scale = np.linalg.norm(
             pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
@@ -46,12 +46,54 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
 
         scale = scale[:, np.newaxis, :]
-        # root = pose[:, np.newaxis, _NOSE_IDX]
-        root = average_point
+        root = pose[:, np.newaxis, _NOSE_IDX]
+        # root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] - pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
+        # root = average_point
 
         pose = (pose - root) / scale
         left = (left - root) / scale
         right = (right - root) / scale
+
+        left = left * left_present_mask[..., None]
+        right = right * right_present_mask[..., None]
+        pose = pose * pose_present_mask[..., None]
+
+        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
+
+        fused_coords = np.concatenate([pose, left, right], axis=1)
+
+        fused_flat = fused_coords.reshape(T, -1)  # (T, D)
+
+        return fused_flat
+
+    def fuse_seperate_pose_and_hand(self, pose_feature, left_feature, right_feature):
+
+        T = pose_feature.shape[0]
+
+        pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
+        left = left_feature.reshape(T, 21, _COORD_DIM).copy()
+        right = right_feature.reshape(T, 21, _COORD_DIM).copy()
+
+        left_present_mask = ~np.all(left == 0, axis=-1)
+        right_present_mask = ~np.all(right == 0, axis=-1)
+        pose_present_mask = ~np.all(pose == 0, axis=-1)
+
+        scale = np.linalg.norm(
+            pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
+            axis=-1,
+            keepdims=True
+        )
+
+        scale = np.where(scale > _EPS, scale, 1.0)
+
+        scale = scale[:, np.newaxis, :]
+        pose_root = pose[:, np.newaxis, _NOSE_IDX]
+        left_root = left[:, 0:1, :]
+        right_root = right[:, 0:1, :]
+
+        pose = (pose - pose_root) / scale
+        left = (left - left_root) / scale
+        right = (right - right_root) / scale
 
         left = left * left_present_mask[..., None]
         right = right * right_present_mask[..., None]

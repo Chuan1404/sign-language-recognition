@@ -2,7 +2,6 @@ import json
 import os
 
 import numpy as np
-import torch
 from torch.utils.data import Dataset
 from config import _COORD_DIM
 
@@ -94,10 +93,5 @@ class WLASLLandmarksDataset(Dataset):
         right_features = right_features[start_frame:end_frame]
         pose_features = pose_features[start_frame:end_frame]
 
-        # pose_smooth, left_smooth, right_smooth = restore_missing_points(pose_features, left_features, right_features)
-
-        # features = np.concatenate([pose_features, left_features, right_features], axis=-1)
-        # hand_normalize_features = self.normalize_features(torch.tensor(hand_features))
-
-        features = self.fusion_component.fuse_follow_hand(pose_features, left_features, right_features, use_pose=False)
+        features = self.fusion_component.fuse_seperate_pose_and_hand(pose_features, left_features, right_features)
         return features, label_id

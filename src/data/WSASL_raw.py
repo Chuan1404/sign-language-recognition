@@ -2,6 +2,7 @@ import json
 import os
 
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 from config import _COORD_DIM
 
@@ -73,25 +74,28 @@ class WLASLLandmarksDataset(Dataset):
             gloss = f.read().strip()
         label_id = self.gloss2idx[gloss]
 
-        left_present_mask = np.any(left_features != 0, axis=(1, 2))
-        right_present_mask = np.any(right_features != 0, axis=(1, 2))
+        # left_present_mask = np.any(left_features != 0, axis=(1, 2))
+        # right_present_mask = np.any(right_features != 0, axis=(1, 2))
 
-        any_present = left_present_mask | right_present_mask
+        # any_present = left_present_mask | right_present_mask
 
-        if any_present.any():
+        # if any_present.any():
+        #
+        #     start_frame = int(np.argmax(any_present))
+        #
+        #     end_frame = int(np.where(any_present)[0][-1]) + 1
+        #
+        # else:
+        #
+        #     start_frame = 0
+        #     end_frame = T
 
-            start_frame = int(np.argmax(any_present))
+        # left_features = left_features[start_frame:end_frame]
+        # right_features = right_features[start_frame:end_frame]
+        # pose_features = pose_features[start_frame:end_frame]
 
-            end_frame = int(np.where(any_present)[0][-1]) + 1
+        position_features = self.fusion_component.fuse_follow_position(pose_features, left_features, right_features)
+        shape_features = self.fusion_component.fuse_follow_shape(pose_features, left_features, right_features)
 
-        else:
-
-            start_frame = 0
-            end_frame = T
-
-        left_features = left_features[start_frame:end_frame]
-        right_features = right_features[start_frame:end_frame]
-        pose_features = pose_features[start_frame:end_frame]
-
-        features = self.fusion_component.fuse_seperate_pose_and_hand(pose_features, left_features, right_features)
+        features = np.concatenate([position_features, shape_features], axis=-1)
         return features, label_id

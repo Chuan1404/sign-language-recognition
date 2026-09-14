@@ -1,7 +1,5 @@
-from sympy.printing.pytorch import torch
-
+import torch
 from src.models.SLT_model import ISLR_V1
-
 
 def load_model(model_path, num_classes=100):
     print("Loading model...")

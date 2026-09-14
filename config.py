@@ -1,5 +1,7 @@
 import os
+import torch
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ROOT = 'D:/SignDetection'
 BATCH_SIZE = 8
 LR = 1e-4

@@ -12,21 +12,23 @@ from src.training.train import collate_fn, train_one_epoch, validate
 
 import torch
 import argparse
-from config import ROOT
+from config import ROOT, DEVICE
 import json
 
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
-LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
+LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = f"contest_2000_v1_2.pt"
+MODEL_NAME = f"contest_100_v1_2.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
 EPOCHS = 100
 TOP_K = 2
 PATIENCE = 10
+
+print(DEVICE)
 
 def default_args():
     parser = argparse.ArgumentParser(add_help=False)
@@ -40,8 +42,6 @@ def default_args():
 def main(args):
     fusion_component = FusionComponent()
 
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     base_train = WLASLLandmarksDataset(
         args.data_path, args.label_path, fusion_component, mode="train"
     )
@@ -51,8 +51,8 @@ def main(args):
 
     feature, _ = base_train[0]
 
-    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    # train_dataset = base_train
+    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    train_dataset = base_train
     val_dataset = base_val
 
     train_loader = DataLoader(
@@ -74,7 +74,7 @@ def main(args):
         num_classes=num_classes,
     )
 
-    model = ISLR_V1(**model_kwargs).to(DEVICE)
+    model = ISLR_V4(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")
@@ -98,8 +98,8 @@ def main(args):
 
         torch.cuda.empty_cache()
 
-        train_loss = train_one_epoch(model, train_loader, optimizer)
-        val_loss, val_top1_acc, val_topk_acc = validate(model, val_loader, top_k=TOP_K)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device=DEVICE)
+        val_loss, val_top1_acc, val_topk_acc = validate(model, val_loader, top_k=TOP_K, device=DEVICE)
 
         print(f"Train loss      : {train_loss:.4f}")
         print(f"Test   loss      : {val_loss:.4f}")

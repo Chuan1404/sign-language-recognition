@@ -1,7 +1,6 @@
-from sympy.printing.pytorch import torch
+import torch
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
-
 
 def collate_fn(batch):
     features, labels = [], []

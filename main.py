@@ -17,10 +17,10 @@ import json
 
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
-LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
+LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = f"contest_100_v1_2.pt"
+MODEL_NAME = f"contest_2000_v4_2.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
@@ -51,8 +51,8 @@ def main(args):
 
     feature, _ = base_train[0]
 
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    train_dataset = base_train
+    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    # train_dataset = base_train
     val_dataset = base_val
 
     train_loader = DataLoader(
@@ -106,7 +106,7 @@ def main(args):
         print(f"Test   top-1 acc : {val_top1_acc * 100:.2f}%")
         print(f"Val   top-{TOP_K} acc : {val_topk_acc*100:.2f}%")
 
-        if val_top1_acc > best:
+        if val_loss < best_loss:
             no_improve = 0
             best = val_top1_acc
             best_loss = val_loss

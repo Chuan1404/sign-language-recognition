@@ -92,6 +92,21 @@ html, body {
   border-left: 1px solid var(--border);
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hamburger-btn {
+  font-size: 1rem;
+}
+
+.hamburger-icon {
+  display: block;
+  line-height: 1;
+}
+
 /* Status badge */
 .status-badge {
   display: flex;
@@ -125,7 +140,7 @@ html, body {
 /* ── Main layout — 3 columns ─────────────────────────── */
 #body {
   display: grid;
-  grid-template-columns: 500px 1fr 260px;
+  grid-template-columns: 500px 1fr auto;
   height: calc(100vh - 52px);
   overflow: hidden;
 }
@@ -283,11 +298,24 @@ html, body {
 
 /* ── Right column: Gloss list ─────────────────────────── */
 #control-area {
+  width: 260px;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.3s ease;
+}
+
+/* Collapsed: slides away and the stream column reclaims the space */
+#control-area.collapsed {
+  width: 0;
+  border-left-color: transparent;
+}
+
+#control-area > * {
+  min-width: 260px;   /* content keeps its shape while the panel width animates */
 }
 
 .sidebar-header {

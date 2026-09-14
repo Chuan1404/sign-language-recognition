@@ -94,7 +94,7 @@ class WLASLLandmarksDataset(Dataset):
         # right_features = right_features[start_frame:end_frame]
         # pose_features = pose_features[start_frame:end_frame]
 
-        position_features = self.fusion_component.fuse_follow_position(pose_features, left_features, right_features)
+        position_features = self.fusion_component.fuse(pose_features, left_features, right_features)
         shape_features = self.fusion_component.fuse_follow_shape(pose_features, left_features, right_features)
 
         features = np.concatenate([position_features, shape_features], axis=-1)

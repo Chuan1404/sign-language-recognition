@@ -142,13 +142,13 @@ class SignLanguageTranslatorV1(nn.Module):
 #         self.encoder_norm = nn.LayerNorm(d_model)
 #         self.classifier = nn.Linear(d_model, num_classes)
 #
-#     def encode(self, features, video_mask):
+#     def encode(self, extract_features, video_mask):
 #         if video_mask is None:
 #             raise ValueError("video_mask is required")
 #
 #         video_mask = video_mask.bool()
 #
-#         x = self.input_projection(features)
+#         x = self.input_projection(extract_features)
 #         x = self.pos_encoder(x)  # (B, T, d_model)
 #         x = self.encoder(
 #             x,
@@ -158,10 +158,10 @@ class SignLanguageTranslatorV1(nn.Module):
 #
 #         return x
 #
-#     def forward(self, features, labels=None, video_mask=None):
-#         B, T, _ = features.shape
+#     def forward(self, extract_features, labels=None, video_mask=None):
+#         B, T, _ = extract_features.shape
 #
-#         x = self.encode(features, video_mask)
+#         x = self.encode(extract_features, video_mask)
 #         pooled = masked_mean_pool(x, video_mask.bool())
 #         logits = self.classifier(pooled)  # (B, num_classes)
 #
@@ -172,8 +172,8 @@ class SignLanguageTranslatorV1(nn.Module):
 #         return logits, loss
 #
 #     @torch.no_grad()
-#     def predict(self, features, video_mask=None, top_k=1):
-#         logits = self.forward(features, video_mask=video_mask).logits
+#     def predict(self, extract_features, video_mask=None, top_k=1):
+#         logits = self.forward(extract_features, video_mask=video_mask).logits
 #         if top_k == 1:
 #             return logits.argmax(dim=-1)
 
@@ -478,13 +478,13 @@ class ISLR_V3(nn.Module):
         for block in self.gcn_block:
             features = block(features, video_mask)
 
-        # features = self.frame_attention(features, video_mask)
+        # extract_features = self.frame_attention(extract_features, video_mask)
         for block in self.attn_block:
             features = block(features, video_mask)
 
         # B T N C -> B N T C
-        # features = features.transpose(1, 2)
-        # split_features = features.reshape(B, self.num_nodes, T, 2 ,-1)
+        # extract_features = extract_features.transpose(1, 2)
+        # split_features = extract_features.reshape(B, self.num_nodes, T, 2 ,-1)
 
         # first split feature will be applied Self Attention
         # second split feature will be applied TCN
@@ -511,7 +511,7 @@ class ISLR_V4(nn.Module):
             dim_feedforward=512 * 4,
             dropout=0.2,
             max_seq_len=5000,
-            num_classes=2000
+            num_classes=1000
     ):
         super().__init__()
 
@@ -565,8 +565,9 @@ class ISLR_V4(nn.Module):
 
         x_position = self.position_projection(position_features)
         x_shape = self.shape_projection(shape_features)
-        # x = x_position + x_shape
-        x = self.pos_encoder(x_position)  #   (B, T, d_model)
+
+        x = x_shape + x_position
+        x = self.pos_encoder(x)  #   (B, T, d_model)
         x = self.encoder(
             x,
             src_key_padding_mask=~video_mask  # True = ignore (padding)

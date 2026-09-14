@@ -21,6 +21,9 @@
         <span class="header-subtitle">Real-time ASL Recognition</span>
     </div>
     <div class="header-right">
+        <button id="gloss-toggle-btn" class="icon-btn hamburger-btn" title="Toggle gloss library" aria-label="Toggle gloss library" aria-expanded="true" aria-controls="control-area">
+            <span class="hamburger-icon">&#9776;</span>
+        </button>
         <div id="status-badge" class="status-badge status-idle">
             <span class="status-dot"></span>
             <span class="status-label">Idle</span>
@@ -120,6 +123,9 @@ const statusBadge  = document.getElementById('status-badge');
 const statusLabel  = statusBadge.querySelector('.status-label');
 const copyBtn      = document.getElementById('copy-btn');
 const clearBtn     = document.getElementById('clear-btn');
+const controlArea   = document.getElementById('control-area');
+const glossToggle    = document.getElementById('gloss-toggle-btn');
+const hamburgerIcon  = glossToggle?.querySelector('.hamburger-icon');
 
 let allGlosses = [];
 
@@ -179,6 +185,22 @@ overlay.addEventListener('click', e => { if (e.target === overlay) closePopup();
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closePopup(); });
 
 loadGlosses();
+
+// ── Gloss library slide toggle (hamburger) ──────────────────
+function setGlossCollapsed(collapsed) {
+    controlArea.classList.toggle('collapsed', collapsed);
+    glossToggle.setAttribute('aria-expanded', String(!collapsed));
+    if (hamburgerIcon) hamburgerIcon.innerHTML = collapsed ? '&#9776;' : '&times;';
+    try { localStorage.setItem('signlens-gloss-collapsed', collapsed ? '1' : '0'); } catch (e) {}
+}
+
+glossToggle?.addEventListener('click', () => {
+    setGlossCollapsed(!controlArea.classList.contains('collapsed'));
+});
+
+try {
+    if (localStorage.getItem('signlens-gloss-collapsed') === '1') setGlossCollapsed(true);
+} catch (e) {}
 
 // ── Transcript & status polling ────────────────────────────
 let lastWords = [];

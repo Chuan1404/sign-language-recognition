@@ -46,9 +46,9 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
 
         scale = scale[:, np.newaxis, :]
-        root = pose[:, np.newaxis, _NOSE_IDX]
+        # root = pose[:, np.newaxis, _NOSE_IDX]
         # root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] - pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
-        # root = average_point
+        root = average_point
 
         pose = (pose - root) / scale
         left = (left - root) / scale

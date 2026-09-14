@@ -1,5 +1,6 @@
 import cv2 as cv
-from config import LEFT_ZONE, RIGHT_ZONE, COLOR_GREEN, COLOR_RED, ZONE_W, ZONE_H, BACKSPACE_ZONE, CLEAR_ZONE, COLOR_ORANGE, COLOR_YELLOW, ACTION_BOX_W, ACTION_BOX_H, ACTION_BOX_MARGIN, FRAME_W
+from config import LEFT_ZONE, RIGHT_ZONE, COLOR_GREEN, COLOR_RED, ZONE_W, ZONE_H, BACKSPACE_ZONE, CLEAR_ZONE, \
+    COLOR_ORANGE, COLOR_YELLOW, ACTION_BOX_W, ACTION_BOX_H, ACTION_BOX_MARGIN, FRAME_W, FRAME_H
 
 
 def point_in_zone(x, y, zone):
@@ -17,7 +18,7 @@ def draw_zones(frame, left_in_zone, right_in_zone):
 
 def get_start_zone(frame_w, frame_h):
     zx = int(frame_w / 2 - ZONE_W / 2)
-    zy = int(frame_h - ZONE_H)
+    zy = int(frame_h / 2 - ZONE_H / 2)
     return (zx, zy, ZONE_W, ZONE_H)
 
 def draw_start_zone(frame, zone, is_recording):
@@ -56,3 +57,10 @@ def draw_action_zones(frame, backspace_active, clear_active):
 
     return frame
 
+
+def wrist_in_zone(hand_arr, detected, zone):
+    if not detected:
+        return False
+    wx = hand_arr[0, 0] * FRAME_W
+    wy = hand_arr[0, 1] * FRAME_H
+    return point_in_zone(wx, wy, zone)

@@ -32,7 +32,7 @@ _COORD_DIM = 2
 # WEB
 WINDOW_SIZE = 32
 FRAME_W, FRAME_H = 640, 480
-ZONE_W, ZONE_H = 400, 480
+ZONE_W, ZONE_H = 300, 400
 
 LEFT_ZONE = (int(FRAME_W * 0.15), 10, ZONE_W, ZONE_H)
 RIGHT_ZONE = (int(FRAME_W * 0.85 - ZONE_W), 10, ZONE_W, ZONE_H)
@@ -42,7 +42,7 @@ COLOR_GREEN = (0, 255, 0)
 
 # Action boxes (raw frame coords, before flip)
 # After flip:  BACKSPACE_ZONE appears top-LEFT,  CLEAR_ZONE appears top-RIGHT
-ACTION_BOX_W, ACTION_BOX_H = 120, 120
+ACTION_BOX_W, ACTION_BOX_H = 100, 100
 ACTION_BOX_MARGIN = 10
 
 # top-right corner of raw frame  → top-LEFT  on display  → BACKSPACE

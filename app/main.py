@@ -1,52 +1,39 @@
 import os
+
+
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from src.models import GPT_Pretrained_Model
 
-from app.utils import load_model, get_start_zone, point_in_zone, predict, draw_start_zone, draw_action_zones
+from app.utils import load_model, get_start_zone, point_in_zone, predict, draw_start_zone, draw_action_zones, \
+    wrist_in_zone
 from src import FusionComponent, PoseDetection
 import sys, numpy as np, cv2 as cv, torch, json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import ROOT, _COORD_DIM, FRAME_H, FRAME_W, _REMOVE_POSE_IDX, BACKSPACE_ZONE, CLEAR_ZONE
 from flask import Flask, render_template, Response, jsonify, send_file, request
-from src.utils import HandDetection
+from src.utils import HandDetection, build_gloss_list
 
 _ZONE_ANCHOR_POSE_IDX = (11, 12)
 
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
-MODEL_PATH = os.path.join(ROOT, 'outputs', 'models', 'contest_2000_v1.pt')
+MODEL_PATH = os.path.join(ROOT, 'outputs', 'models', 'contest_2000_v4_2.pt')
 WLASL_VIDEO_DIR = os.path.join(ROOT, "datasets", "raw", "WLASL", "videos")
 
 hand_detection = HandDetection()
 pose_detection = PoseDetection()
 fusion = FusionComponent()
+pretrained_model = GPT_Pretrained_Model('gp2').load()
 app = Flask(__name__)
-cap = cv.VideoCapture(0, cv.CAP_MSMF)
+cap = cv.VideoCapture(0, cv.CAP_DSHOW)
 predicted_text = []
 
 with open(os.path.join(LABEL_DIR, "gloss2idx.json"), "r") as f:
     gloss2idx = json.load(f)
     idx2gloss = {v: k for k, v in gloss2idx.items()}
 
-# Build gloss -> first available video_id mapping
-def _build_gloss_list():
-    all_json = []
-    for split in ("train.json", "test.json", "val.json"):
-        p = os.path.join(LABEL_DIR, split)
-        if os.path.exists(p):
-            with open(p, "r") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    all_json.extend(data)
-    gloss_video = {}
-    for item in all_json:
-        g = item["gloss"]
-        vid = item["video_id"]
-        if g not in gloss_video and os.path.exists(os.path.join(WLASL_VIDEO_DIR, f"{vid}.mp4")):
-            gloss_video[g] = vid
-    return [{"gloss": g, "video_id": v} for g, v in sorted(gloss_video.items())]
-
-gloss_list = _build_gloss_list()
+gloss_list = build_gloss_list(label_dir=LABEL_DIR, video_dir=WLASL_VIDEO_DIR)
 
 num_classes = len(gloss2idx)
 model = load_model(model_path=MODEL_PATH, num_classes=num_classes)
@@ -93,7 +80,6 @@ def generate_frames():
             timestamp_ms
         )
 
-        # Detect tay trên frame GỐC (chưa lật)
         pose = np.zeros((33, 3), dtype=np.float32)
         right_hand = np.zeros((21, 3), dtype=np.float32)
         left_hand = np.zeros((21, 3), dtype=np.float32)
@@ -102,6 +88,7 @@ def generate_frames():
         right_detected = False
         left_detected = False
 
+        # HAND DETECTION
         handedness = detection_hand_results.handedness
         hand_landmarks = detection_hand_results.hand_landmarks
 
@@ -123,6 +110,7 @@ def generate_frames():
                 left_hand = coords
                 left_detected = True
 
+        # POSE DETECTION
         pose_landmarks = detection_pose_results.pose_landmarks
 
         if len(pose_landmarks) > 0:
@@ -134,21 +122,13 @@ def generate_frames():
             pose = coords
             pose_detected = True
 
-        right_in_zone = right_detected and point_in_zone(
-            right_hand[0, 0] * frame_w, right_hand[0, 1] * frame_h, start_zone
-        )
-
-        left_in_zone = left_detected and point_in_zone(
-            left_hand[0, 0] * frame_w, left_hand[0, 1] * frame_h, start_zone
-        )
-
-        pose_anchor_in_zone = pose_detected and all(
-            point_in_zone(pose[idx, 0] * frame_w, pose[idx, 1] * frame_h, start_zone)
-            for idx in _ZONE_ANCHOR_POSE_IDX
-        )
-
+        # CONDITION
+        right_in_zone = right_detected and point_in_zone(right_hand[0, 0] * frame_w, right_hand[0, 1] * frame_h, start_zone)
+        left_in_zone = left_detected and point_in_zone(left_hand[0, 0] * frame_w, left_hand[0, 1] * frame_h, start_zone)
+        pose_anchor_in_zone = pose_detected and all(point_in_zone(pose[idx, 0] * frame_w, pose[idx, 1] * frame_h, start_zone)for idx in _ZONE_ANCHOR_POSE_IDX)
         hand_in_zone = (right_in_zone or left_in_zone) and pose_anchor_in_zone
 
+        # RECORDING AND PREDICT
         if not recording and hand_in_zone:
             recording = True
             frame_index = 0
@@ -166,11 +146,15 @@ def generate_frames():
                     left_arr = np.stack(left_hand_buf)   # (T, 21, 3)
                     right_arr = np.stack(right_hand_buf)  # (T, 21, 3)
 
-                    fused = fusion.fuse_seperate_pose_and_hand(
-                        pose_feature=pose_arr,
-                        left_feature=left_arr,
-                        right_feature=right_arr,
-                    )
+                    # fused = fusion.fuse_seperate_pose_and_hand(
+                    #     pose_feature=pose_arr,
+                    #     left_feature=left_arr,
+                    #     right_feature=right_arr,
+                    # )
+                    position_features = fusion.fuse(pose_arr, left_arr, right_arr)
+                    shape_features = fusion.fuse_follow_shape(pose_arr, left_arr, right_arr)
+
+                    fused = np.concatenate([position_features, shape_features], axis=-1)
 
                     features = torch.tensor(fused, dtype=torch.float32).unsqueeze(0).cuda()
                     video_mask = torch.ones((1, frame_index)).cuda()
@@ -185,23 +169,9 @@ def generate_frames():
 
                 wait_missing += 1
 
-
-        # ---- Action zones -----------------------------------------------
-        def _wrist_in_zone(hand_arr, detected, zone):
-            if not detected:
-                return False
-            wx = hand_arr[0, 0] * frame_w
-            wy = hand_arr[0, 1] * frame_h
-            return point_in_zone(wx, wy, zone)
-
-        any_in_backspace = (
-            _wrist_in_zone(right_hand, right_detected, BACKSPACE_ZONE) or
-            _wrist_in_zone(left_hand,  left_detected,  BACKSPACE_ZONE)
-        )
-        any_in_clear = (
-            _wrist_in_zone(right_hand, right_detected, CLEAR_ZONE) or
-            _wrist_in_zone(left_hand,  left_detected,  CLEAR_ZONE)
-        )
+        # CONTROLLER
+        any_in_backspace = (wrist_in_zone(right_hand, right_detected, BACKSPACE_ZONE) or wrist_in_zone(left_hand,  left_detected,  BACKSPACE_ZONE))
+        any_in_clear = (wrist_in_zone(right_hand, right_detected, CLEAR_ZONE) or wrist_in_zone(left_hand,  left_detected,  CLEAR_ZONE))
 
         if any_in_backspace:
             backspace_frames += 1
@@ -223,9 +193,8 @@ def generate_frames():
         else:
             clear_frames    = 0
             clear_triggered = False
-        # -----------------------------------------------------------------
 
-        # Show on stream
+        # DRAW ON FRAME
         rgb_frame = hand_detection.draw_landmarks_on_image(
             rgb_frame,
             detection_hand_results

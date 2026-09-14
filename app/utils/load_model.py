@@ -1,5 +1,6 @@
 import torch
-from src.models.SLT_model import ISLR_V1
+from src.models.SLT_model import ISLR_V1, ISLR_V4
+
 
 def load_model(model_path, num_classes=100):
     print("Loading model...")
@@ -7,7 +8,7 @@ def load_model(model_path, num_classes=100):
     model_kwargs = dict(
         num_classes=num_classes,
     )
-    model = ISLR_V1(**model_kwargs)
+    model = ISLR_V4(**model_kwargs)
 
     checkpoint = torch.load(
         model_path,

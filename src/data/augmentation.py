@@ -41,9 +41,7 @@ def _build_swap_index():
 
     return swap
 
-
 _SWAP_IDX = _build_swap_index()
-
 
 class SkeletonAugmentor:
     def __init__(
@@ -55,6 +53,8 @@ class SkeletonAugmentor:
         noise_prob=0.5,
         frame_dropout_prob=0.0,
         max_frame_dropout_ratio=0.1,
+        speed_perturb_prob=1.5,
+        speed_range=(0.8, 1.25),
         rng=None,
     ):
         self.mirror_prob = mirror_prob
@@ -64,16 +64,19 @@ class SkeletonAugmentor:
         self.noise_prob = noise_prob
         self.frame_dropout_prob = frame_dropout_prob
         self.max_frame_dropout_ratio = max_frame_dropout_ratio
-        # Use an explicit Generator so multi-worker DataLoaders can each get
-        # an independent, well-seeded stream (see AugmentedSkeletonDataset).
+        self.speed_perturb_prob = speed_perturb_prob
+        self.speed_range = speed_range
         self.rng = rng if rng is not None else np.random.default_rng()
 
     def __call__(self, fused):
         fused = np.asarray(fused, dtype=np.float32)
         T = fused.shape[0]
-        coords = fused.reshape(T, NUM_JOINTS, _COORD_DIM).copy()
+        coords = fused.reshape(T, -1, _COORD_DIM).copy()
 
         present_mask = ~np.all(coords == 0, axis=-1)  # (T, N), True = real point
+
+        if self.speed_perturb_prob > 0 and self.rng.random() < self.speed_perturb_prob:
+            coords, present_mask = self._speed_perturb(coords, present_mask)
 
         # if self.rng.random() < self.mirror_prob:
         #     coords = self._mirror(coords)
@@ -82,13 +85,14 @@ class SkeletonAugmentor:
         coords = self._rotate(coords)
         coords = self._scale(coords)
 
-        if self.noise_std > 0 and self.rng.random() < self.noise_prob:
-            coords = self._add_noise(coords, present_mask)
-
-        coords = coords.reshape(T, -1)
-
-        if self.frame_dropout_prob > 0 and self.rng.random() < self.frame_dropout_prob:
-            coords = self._drop_frames(coords)
+        # if self.noise_std > 0 and self.rng.random() < self.noise_prob:
+        #     coords = self._add_noise(coords, present_mask)
+        #
+        coords = coords * present_mask[:, :, None]
+        coords = coords.reshape(coords.shape[0], -1)
+        #
+        # if self.frame_dropout_prob > 0 and self.rng.random() < self.frame_dropout_prob:
+        #     coords = self._drop_frames(coords)
 
         return coords.astype(np.float32)
 
@@ -113,6 +117,42 @@ class SkeletonAugmentor:
 
         return coords @ R.T
 
+    def _speed_perturb(self, coords, present_mask):
+        """Resample the sequence along the time axis to simulate the
+        action being performed faster or slower.
+
+        factor > 1.0  -> faster motion -> fewer output frames
+        factor < 1.0  -> slower motion -> more output frames
+
+        Coordinates are linearly interpolated between neighboring frames;
+        the presence mask is resampled with nearest-neighbor lookup since
+        it's boolean (a point is either tracked or not, no in-between).
+        """
+        T = coords.shape[0]
+        if T <= 2:
+            return coords, present_mask
+
+        factor = self.rng.uniform(*self.speed_range)
+        new_T = max(2, int(round(T / factor)))
+        if new_T == T:
+            return coords, present_mask
+
+        old_idx = np.linspace(0, T - 1, T)
+        new_idx = np.linspace(0, T - 1, new_T)
+
+        idx_floor = np.floor(new_idx).astype(np.int64)
+        idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
+        frac = (new_idx - idx_floor).astype(np.float32)[:, None, None]
+
+        coords_new = (
+            coords[idx_floor] * (1.0 - frac) + coords[idx_ceil] * frac
+        ).astype(np.float32)
+
+        nearest_idx = np.round(new_idx).astype(np.int64)
+        mask_new = present_mask[nearest_idx]
+
+        return coords_new, mask_new
+
     def _scale(self, coords):
         lo, hi = self.scale_range
         factor = self.rng.uniform(lo, hi)
@@ -122,8 +162,6 @@ class SkeletonAugmentor:
         noise = self.rng.normal(0.0, self.noise_std, size=coords.shape).astype(
             np.float32
         )
-        # Only perturb points that are actually present, so missing
-        # landmarks (all-zero) stay exactly zero for the model's mask logic.
         return coords + noise * present_mask[..., None]
 
     def _drop_frames(self, coords_flat):

@@ -37,10 +37,10 @@ class WLASLLandmarksDataset(Dataset):
             text_path = os.path.join(video_dir, "gloss.txt")
 
             if (os.path.exists(left_hand_path) and os.path.exists(right_hand_path) and os.path.exists(
-                pose_path) and os.path.exists(text_path)):
+                    pose_path) and os.path.exists(text_path)):
                 self.samples.append(
                     {"left_hand_path": left_hand_path, "right_hand_path": right_hand_path, "pose_path": pose_path,
-                        "text_path": text_path, })
+                     "text_path": text_path, })
 
     def __len__(self):
         return len(self.samples)
@@ -63,28 +63,9 @@ class WLASLLandmarksDataset(Dataset):
             gloss = f.read().strip()
         label_id = self.gloss2idx[gloss]
 
-        # left_present_mask = np.any(left_features != 0, axis=(1, 2))
-        # right_present_mask = np.any(right_features != 0, axis=(1, 2))
-
-        # any_present = left_present_mask | right_present_mask
-
-        # if any_present.any():
-        #
-        #     start_frame = int(np.argmax(any_present))
-        #
-        #     end_frame = int(np.where(any_present)[0][-1]) + 1
-        #
-        # else:
-        #
-        #     start_frame = 0
-        #     end_frame = T
-
-        # left_features = left_features[start_frame:end_frame]
-        # right_features = right_features[start_frame:end_frame]
-        # pose_features = pose_features[start_frame:end_frame]
-
         position_features = self.fusion_component.fuse_follow_position(pose_features, left_features, right_features)
+        vel_features = self.fusion_component.fuse_follow_velocity(pose_features, left_features, right_features)
         shape_features = self.fusion_component.fuse_follow_shape(pose_features, left_features, right_features)
 
-        features = np.concatenate([position_features, shape_features], axis=-1)
+        features = np.concatenate([position_features, shape_features, vel_features], axis=-1)
         return features, label_id

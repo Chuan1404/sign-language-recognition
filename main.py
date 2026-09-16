@@ -51,8 +51,8 @@ def main(args):
 
     feature, _ = base_train[0]
 
-    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    # train_dataset = base_train
+    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    train_dataset = base_train
     val_dataset = base_val
 
     train_loader = DataLoader(

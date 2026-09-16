@@ -8,6 +8,7 @@ _RIGHT_SHOULDER_IDX = 12
 
 _EPS = 1e-6
 
+
 class FusionComponent:
 
     def __init__(self):
@@ -21,27 +22,23 @@ class FusionComponent:
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
-        all_points = np.concatenate([pose, left, right],axis=1)  # (T, N, 2)
+        all_points = np.concatenate([pose, left, right], axis=1)  # (T, N, 2)
 
         left_present_mask = ~np.all(left == 0, axis=-1)
         right_present_mask = ~np.all(right == 0, axis=-1)
         pose_present_mask = ~np.all(pose == 0, axis=-1)
 
-        all_present_mask = np.concatenate([pose_present_mask, left_present_mask, right_present_mask], axis=1) # (T, N)
+        all_present_mask = np.concatenate([pose_present_mask, left_present_mask, right_present_mask], axis=1)  # (T, N)
 
         valid_points = (all_points * all_present_mask[..., None])
 
-        valid_count = all_present_mask.sum(axis=1,keepdims=True)
+        valid_count = all_present_mask.sum(axis=1, keepdims=True)
 
-        average_point = (valid_points.sum(axis=1)/ np.maximum(valid_count, 1))
+        average_point = (valid_points.sum(axis=1) / np.maximum(valid_count, 1))
 
         average_point = average_point.reshape(T, 1, _COORD_DIM)
 
-        scale = np.linalg.norm(
-            pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
-            axis=-1,
-            keepdims=True
-        )
+        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
 
         scale = np.where(scale > _EPS, scale, 1.0)
 
@@ -76,11 +73,7 @@ class FusionComponent:
         right_present_mask = ~np.all(right == 0, axis=-1)
         pose_present_mask = ~np.all(pose == 0, axis=-1)
 
-        scale = np.linalg.norm(
-            pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
-            axis=-1,
-            keepdims=True
-        )
+        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
         scale = np.where(scale > _EPS, scale, 1.0)
         scale = scale[:, np.newaxis, :]
 
@@ -90,38 +83,53 @@ class FusionComponent:
         left = (left - root) / scale
         right = (right - root) / scale
 
-        # --- Tính vận tốc TRƯỚC khi zero-mask vị trí (để phép trừ chính xác) ---
+        left = left * left_present_mask[..., None]
+        right = right * right_present_mask[..., None]
+        pose = pose * pose_present_mask[..., None]
+
+        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
+
+        fused_coords = np.concatenate([pose, left, right], axis=1)
+
+        fused_flat = fused_coords.reshape(T, -1)  # (T, D)
+
+        return fused_flat
+
+    def fuse_follow_velocity(self, pose_feature, left_feature, right_feature):
+        T = pose_feature.shape[0]
+
+        pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
+        left = left_feature.reshape(T, 21, _COORD_DIM).copy()
+        right = right_feature.reshape(T, 21, _COORD_DIM).copy()
+
+        left_present_mask = ~np.all(left == 0, axis=-1)
+        right_present_mask = ~np.all(right == 0, axis=-1)
+        pose_present_mask = ~np.all(pose == 0, axis=-1)
+
         def compute_velocity(coords, present_mask):
-            # coords: (T, K, C), present_mask: (T, K)
-            vel = np.zeros_like(coords)
-            vel[1:] = coords[1:] - coords[:-1]
+            T = coords.shape[0]
 
-            # Chỉ giữ vận tốc hợp lệ khi CẢ frame t và t-1 đều có keypoint
-            valid_vel_mask = np.zeros_like(present_mask)
-            valid_vel_mask[1:] = present_mask[1:] & present_mask[:-1]
+            vel = np.zeros_like(coords, dtype=np.float32)
 
-            vel = vel * valid_vel_mask[..., None]
+            for i in range(1, T):
+                vel[i] = (coords[i] - coords[i - 1])
+
+            pair_present = present_mask.copy()
+            pair_present[1:] &= present_mask[:-1]
+            pair_present[0] = False
+
+            vel *= pair_present[..., None].astype(np.float32)
+
             return vel
 
         pose_vel = compute_velocity(pose, pose_present_mask)
         left_vel = compute_velocity(left, left_present_mask)
         right_vel = compute_velocity(right, right_present_mask)
 
-        # --- Zero-mask vị trí như cũ (giữ nguyên logic gốc) ---
-        left = left * left_present_mask[..., None]
-        right = right * right_present_mask[..., None]
-        pose = pose * pose_present_mask[..., None]
-
-        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
         pose_vel = np.delete(pose_vel, _REMOVE_POSE_IDX, axis=1)
+        fused_vel = np.concatenate([pose_vel, left_vel, right_vel], axis=1)
 
-        # Ghép vị trí + vận tốc cho từng nhóm (pose/left/right), rồi mới nối 3 nhóm lại
-        fused_coords = np.concatenate([
-            pose, left, right,
-            pose_vel, left_vel, right_vel
-        ], axis=1)
-
-        fused_flat = fused_coords.reshape(T, -1)  # (T, D)
+        fused_flat = fused_vel.reshape(T, -1)
 
         return fused_flat
 
@@ -137,11 +145,7 @@ class FusionComponent:
         right_present_mask = ~np.all(right == 0, axis=-1)
         pose_present_mask = ~np.all(pose == 0, axis=-1)
 
-        scale = np.linalg.norm(
-            pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
-            axis=-1,
-            keepdims=True
-        )
+        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
 
         scale = np.where(scale > _EPS, scale, 1.0)
 
@@ -176,11 +180,7 @@ class FusionComponent:
         left_wrist = left[:, 0:1, :].copy()
         right_wrist = right[:, 0:1, :].copy()
 
-        scale = np.linalg.norm(
-            left_wrist[:, 0] - right_wrist[:, 0],
-            axis=-1,
-            keepdims=True
-        )
+        scale = np.linalg.norm(left_wrist[:, 0] - right_wrist[:, 0], axis=-1, keepdims=True)
         scale = np.where(scale > _EPS, scale, 1.0)
         scale = scale[:, np.newaxis, :]
 
@@ -219,11 +219,10 @@ class FusionComponent:
 
         normalize_hand_feature = normalize_hand_feature * present_mask[..., None]
 
-        return  normalize_hand_feature
+        return normalize_hand_feature
 
     def normalize_by_wrist(self, hand_feature, wrist=None):
         T = hand_feature.shape[0]
-
 
         if wrist is None:
             wrist = hand_feature[:, 0:1, :]
@@ -235,8 +234,6 @@ class FusionComponent:
 
         normalize_hand_feature = hand_feature - wrist
 
-        normalize_hand_feature = (
-                normalize_hand_feature * valid_mask[..., None]
-        )
+        normalize_hand_feature = (normalize_hand_feature * valid_mask[..., None])
 
         return normalize_hand_feature

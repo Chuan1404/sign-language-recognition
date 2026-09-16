@@ -422,17 +422,21 @@ class ISLR_V3(nn.Module):
 
 
 class ISLR_V4(nn.Module):
-    def __init__(self, input_dim=_NUM_NODE * _COORD_DIM * 2, hidden_dim=256, num_encoder_layers=6, nhead=8,
-            dim_feedforward=512 * 4, dropout=0.2, max_seq_len=5000, num_classes=1000):
+    def __init__(self, input_dim=_NUM_NODE * _COORD_DIM, hidden_dim=128, num_encoder_layers=6, nhead=8,
+            dim_feedforward=128 * 4, dropout=0.2, max_seq_len=5000, num_classes=1000):
         super().__init__()
 
         d_model = hidden_dim
+        self.num_nodes = _NUM_NODE
 
-        self.shape_projection = nn.Sequential(nn.Linear(int(input_dim / 2), d_model), nn.GELU(), nn.Dropout(dropout),
+        self.shape_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
             nn.LayerNorm(d_model))
 
-        self.position_projection = nn.Sequential(nn.Linear(147, d_model), nn.GELU(), nn.Dropout(dropout),
+        self.position_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
             nn.LayerNorm(d_model))
+
+        self.vel_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
+                                                 nn.LayerNorm(d_model))
 
         self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
 
@@ -449,14 +453,16 @@ class ISLR_V4(nn.Module):
             raise ValueError("video_mask is required")
 
         video_mask = video_mask.bool()
-        position_features = features[:, :, :147]
-        shape_features = features[:, :, _NUM_NODE * _COORD_DIM:]
+        position_features = features[:, :, :self.num_nodes * 2]
+        shape_features = features[:, :, self.num_nodes * 2:self.num_nodes * 4]
+        vel_features = features[:, :, self.num_nodes * 4:]
 
         x_position = self.position_projection(position_features)
-        # x_shape = self.shape_projection(shape_features)
+        x_vel = self.vel_projection(vel_features)
+        x_shape = self.shape_projection(shape_features)
 
-        # x = x_shape + x_position
-        x = x_position
+        x = x_shape + x_vel
+        # x = x_position @ x_shape @ x_vel
         x = self.pos_encoder(x)  # (B, T, d_model)
         x = self.encoder(x, src_key_padding_mask=~video_mask  # True = ignore (padding)
         )  # (B, T, d_model)

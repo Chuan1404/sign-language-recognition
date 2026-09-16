@@ -110,11 +110,11 @@ class FusionComponent:
             T = coords.shape[0]
 
             vel = np.zeros_like(coords, dtype=np.float32)
-
             for i in range(1, T):
-                vel[i] = (coords[i] - coords[i - 1])
+                vel[i] = coords[i] - coords[i - 1]
 
             pair_present = present_mask.copy()
+
             pair_present[1:] &= present_mask[:-1]
             pair_present[0] = False
 
@@ -127,7 +127,13 @@ class FusionComponent:
         right_vel = compute_velocity(right, right_present_mask)
 
         pose_vel = np.delete(pose_vel, _REMOVE_POSE_IDX, axis=1)
+
+        # Fuse
         fused_vel = np.concatenate([pose_vel, left_vel, right_vel], axis=1)
+
+        velocity_scale = 1.0
+        fused_vel = fused_vel / velocity_scale
+        fused_vel = np.clip(fused_vel, 0.0, 1.0)
 
         fused_flat = fused_vel.reshape(T, -1)
 

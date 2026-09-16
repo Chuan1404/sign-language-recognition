@@ -461,7 +461,7 @@ class ISLR_V4(nn.Module):
         x_vel = self.vel_projection(vel_features)
         x_shape = self.shape_projection(shape_features)
 
-        x = x_shape + x_vel
+        x = x_shape + x_vel + x_position
         # x = x_position @ x_shape @ x_vel
         x = self.pos_encoder(x)  # (B, T, d_model)
         x = self.encoder(x, src_key_padding_mask=~video_mask  # True = ignore (padding)

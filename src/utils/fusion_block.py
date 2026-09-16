@@ -67,9 +67,7 @@ class FusionComponent:
         return fused_flat
 
     def fuse_follow_position(self, pose_feature, left_feature, right_feature):
-
         T = pose_feature.shape[0]
-
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
@@ -83,23 +81,45 @@ class FusionComponent:
             axis=-1,
             keepdims=True
         )
-
         scale = np.where(scale > _EPS, scale, 1.0)
-
         scale = scale[:, np.newaxis, :]
-        root = pose[:, np.newaxis, _NOSE_IDX]
+
+        root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
 
         pose = (pose - root) / scale
         left = (left - root) / scale
         right = (right - root) / scale
 
+        # --- Tính vận tốc TRƯỚC khi zero-mask vị trí (để phép trừ chính xác) ---
+        def compute_velocity(coords, present_mask):
+            # coords: (T, K, C), present_mask: (T, K)
+            vel = np.zeros_like(coords)
+            vel[1:] = coords[1:] - coords[:-1]
+
+            # Chỉ giữ vận tốc hợp lệ khi CẢ frame t và t-1 đều có keypoint
+            valid_vel_mask = np.zeros_like(present_mask)
+            valid_vel_mask[1:] = present_mask[1:] & present_mask[:-1]
+
+            vel = vel * valid_vel_mask[..., None]
+            return vel
+
+        pose_vel = compute_velocity(pose, pose_present_mask)
+        left_vel = compute_velocity(left, left_present_mask)
+        right_vel = compute_velocity(right, right_present_mask)
+
+        # --- Zero-mask vị trí như cũ (giữ nguyên logic gốc) ---
         left = left * left_present_mask[..., None]
         right = right * right_present_mask[..., None]
         pose = pose * pose_present_mask[..., None]
 
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
+        pose_vel = np.delete(pose_vel, _REMOVE_POSE_IDX, axis=1)
 
-        fused_coords = np.concatenate([pose, left, right], axis=1)
+        # Ghép vị trí + vận tốc cho từng nhóm (pose/left/right), rồi mới nối 3 nhóm lại
+        fused_coords = np.concatenate([
+            pose, left, right,
+            pose_vel, left_vel, right_vel
+        ], axis=1)
 
         fused_flat = fused_coords.reshape(T, -1)  # (T, D)
 
@@ -126,7 +146,8 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
 
         scale = scale[:, np.newaxis, :]
-        pose_root = pose[:, np.newaxis, _NOSE_IDX]
+        # pose_root = pose[:, np.newaxis, _NOSE_IDX]
+        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
         left_root = left[:, 0:1, :]
         right_root = right[:, 0:1, :]
 

@@ -72,31 +72,3 @@ def detect_pose(pose_detection, rgb_frame, timestamp_ms):
         pose_detected = True
 
     return detection_pose_results,pose_coors, pose_detected
-
-def predict_gross(model, fusion, features, pretrained_model, predicted_text=''):
-
-    T, _, _ = features.shape
-    pose_arr = features[:, :33, :]
-    left_arr = features[:, 33:54, :]
-    right_arr = features[:, 54:75, :]
-
-    position_features = fusion.fuse(pose_arr, left_arr, right_arr)
-    shape_features = fusion.fuse_follow_shape(pose_arr, left_arr, right_arr)
-
-    fused = np.concatenate([position_features, shape_features], axis=-1)
-
-    features = torch.tensor(fused, dtype=torch.float32).unsqueeze(0).cuda()
-    video_mask = torch.ones((1, T)).cuda()
-    with torch.no_grad():
-            logits, loss = model(features, video_mask=video_mask)
-
-    top_probs, top_indices = torch.topk(logits, k=5, dim=-1)
-    print(top_probs, top_indices)
-    output = torch.argmax(logits, dim=1).item()
-
-    if len(predicted_text) > 0:
-        results = pretrained_model.predict_topk(predicted_text)
-        print(results)
-
-    return output
-

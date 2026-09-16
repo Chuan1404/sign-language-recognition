@@ -7,6 +7,7 @@ from src.models.positional_encoding import PositionalEncoding
 from config import _N_POSE, _NUM_NODE, _COORD_DIM, _N_HAND
 from src.models.spatial_graph import GrapConvBlock, build_adjacency, GCN_Block
 
+
 class ClassificationOutput:
 
     def __init__(self, loss=None, logits=None):
@@ -20,45 +21,22 @@ def masked_mean_pool(x, video_mask):
     counts = mask.sum(dim=1).clamp(min=1.0)  # (B, 1) — avoid /0
     return summed / counts
 
+
 class SignLanguageTranslatorV1(nn.Module):
-    def __init__(
-            self,
-            input_dim=138,
-            hidden_dim=512,
-            num_encoder_layers=6,
-            nhead=8,
-            dim_feedforward=512 * 4,
-            dropout=0.1,
-            max_seq_len=5000,
-            num_classes=2000
-    ):
+    def __init__(self, input_dim=138, hidden_dim=512, num_encoder_layers=6, nhead=8, dim_feedforward=512 * 4,
+            dropout=0.1, max_seq_len=5000, num_classes=2000):
         super().__init__()
 
         d_model = hidden_dim
-        self.input_projection = nn.Sequential(
-            nn.Linear(input_dim, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model)
-        )
+        self.input_projection = nn.Sequential(nn.Linear(input_dim, d_model), nn.GELU(), nn.Dropout(dropout),
+            nn.LayerNorm(d_model))
 
-        self.pos_encoder = PositionalEncoding(
-            d_model=d_model,
-            max_len=max_seq_len,
-            dropout=dropout
-        )
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-        )
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
+            dropout=dropout, )
 
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_encoder_layers
-        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
 
         self.encoder_norm = nn.LayerNorm(d_model)
         self.classifier = nn.Linear(d_model, num_classes)
@@ -71,9 +49,7 @@ class SignLanguageTranslatorV1(nn.Module):
 
         x = self.input_projection(features)  # (B, T, d_model)
         x = self.pos_encoder(x)  # (B, T, d_model)
-        x = self.encoder(
-            x,
-            src_key_padding_mask=~video_mask  # True = ignore (padding)
+        x = self.encoder(x, src_key_padding_mask=~video_mask  # True = ignore (padding)
         )  # (B, T, d_model)
         x = self.encoder_norm(x)  # (B, T, d_model)
 
@@ -178,46 +154,20 @@ class SignLanguageTranslatorV1(nn.Module):
 #             return logits.argmax(dim=-1)
 
 class ISLR_V1(nn.Module):
-    def __init__(
-            self,
-            input_dim=_NUM_NODE * _COORD_DIM,
-            hidden_dim=256,
-            num_encoder_layers=6,
-            nhead=8,
-            dim_feedforward=512 * 4,
-            dropout=0.2,
-            max_seq_len=5000,
-            num_classes=2000
-    ):
+    def __init__(self, input_dim=_NUM_NODE * _COORD_DIM, hidden_dim=256, num_encoder_layers=6, nhead=8,
+            dim_feedforward=512 * 4, dropout=0.2, max_seq_len=5000, num_classes=2000):
         super().__init__()
 
         d_model = hidden_dim
-        self.input_projection = nn.Sequential(
-            nn.Linear(input_dim, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model)
-        )
+        self.input_projection = nn.Sequential(nn.Linear(input_dim, d_model), nn.GELU(), nn.Dropout(dropout),
+            nn.LayerNorm(d_model))
 
-        self.pos_encoder = PositionalEncoding(
-            d_model=d_model,
-            max_len=max_seq_len,
-            dropout=dropout
-        )
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True
-        )
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
+            dropout=dropout, batch_first=True, norm_first=True)
 
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_encoder_layers
-        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
 
         self.encoder_norm = nn.LayerNorm(d_model)
         self.classifier = nn.Linear(d_model, num_classes)
@@ -230,9 +180,7 @@ class ISLR_V1(nn.Module):
 
         x = self.input_projection(features)
         x = self.pos_encoder(x)  # (B, T, d_model)
-        x = self.encoder(
-            x,
-            src_key_padding_mask=~video_mask  # True = ignore (padding)
+        x = self.encoder(x, src_key_padding_mask=~video_mask  # True = ignore (padding)
         )  # (B, T, d_model)
         x = self.encoder_norm(x)  # (B, T, d_model)
 
@@ -240,7 +188,6 @@ class ISLR_V1(nn.Module):
 
     def forward(self, features, labels=None, video_mask=None):
         B, T, _ = features.shape
-
 
         x = self.encode(features, video_mask)
         pooled = masked_mean_pool(x, video_mask.bool())
@@ -263,9 +210,7 @@ class SimpleTCN(nn.Module):
     def __init__(self, channels, kernel_size=9):
         super().__init__()
         pad = (kernel_size - 1) // 2
-        self.conv = nn.Conv2d(channels, channels,
-                              kernel_size=(kernel_size, 1),
-                              padding=(pad, 0))
+        self.conv = nn.Conv2d(channels, channels, kernel_size=(kernel_size, 1), padding=(pad, 0))
         self.bn = nn.BatchNorm2d(channels)
         self.act = nn.GELU()
 
@@ -277,8 +222,7 @@ class SimpleTCN(nn.Module):
 
 class DecoupledGCN(nn.Module):
 
-    def __init__(self, in_channels, out_channels, num_nodes,
-                 base_adjacency, decouple_p=4):
+    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=4):
         super().__init__()
 
         self.V = num_nodes
@@ -288,13 +232,9 @@ class DecoupledGCN(nn.Module):
         base_adjacency = base_adjacency.float()
         self.register_buffer("I", torch.eye(self.V))  # (1, N, N)
 
-        self.A_in = nn.Parameter(
-            base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3
-        )  # (p, N, N)
+        self.A_in = nn.Parameter(base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
 
-        self.A_out = nn.Parameter(
-            base_adjacency.t().unsqueeze(0).repeat(self.p, 1, 1) * 1e-3
-        )  # (p, N, N)
+        self.A_out = nn.Parameter(base_adjacency.t().unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
 
     def _raw_A(self):
         return self.I.unsqueeze(0) + self.A_in + self.A_out
@@ -318,8 +258,7 @@ class DecoupledGCN(nn.Module):
         return out, A_raw
 
 class SelfPacingDroppingBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency,
-                 groups, decouple_p=4, drop=True):
+    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, groups, decouple_p=4, drop=True):
         super().__init__()
 
         self.gcn = DecoupledGCN(in_ch, out_ch, num_nodes, base_adjacency, decouple_p)
@@ -341,13 +280,8 @@ class SPDStack(nn.Module):
         for i in range(num_blocks):
             is_last = (i == num_blocks - 1)
 
-            block = SelfPacingDroppingBlock(
-                in_ch=channels[i],
-                out_ch=channels[i + 1],
-                num_nodes=num_nodes,
-                base_adjacency=base_adjacency,
-                groups=[],
-            )
+            block = SelfPacingDroppingBlock(in_ch=channels[i], out_ch=channels[i + 1], num_nodes=num_nodes,
+                base_adjacency=base_adjacency, groups=[], )
 
             self.blocks.append(block)
 
@@ -362,13 +296,7 @@ class SPDStack(nn.Module):
         return feat
 
 class ISLR_V2(nn.Module):
-    def __init__(
-            self,
-            hidden_dim=256,
-            channels=(64, 64, 128, 128),
-            dropout=0.1,
-            num_classes=2000
-    ):
+    def __init__(self, hidden_dim=256, channels=(64, 64, 128, 128), dropout=0.1, num_classes=2000):
         super().__init__()
 
         d_model = hidden_dim
@@ -379,12 +307,8 @@ class ISLR_V2(nn.Module):
         adjacency_edges_matrix = build_adjacency()
         # groups = build_arm_groups(num_pose_points, num_hand_points)
 
-        self.spd = SPDStack(
-            channels=[_COORD_DIM, *channels],
-            num_nodes=self.num_nodes,
-            base_adjacency=adjacency_edges_matrix,
-            groups=[]
-        )
+        self.spd = SPDStack(channels=[_COORD_DIM, *channels], num_nodes=self.num_nodes,
+            base_adjacency=adjacency_edges_matrix, groups=[])
 
         self.classifier = nn.Linear(out, num_classes)
 
@@ -416,12 +340,8 @@ class FrameAttention(nn.Module):
         self.K = nn.Linear(input_dim, hidden_dim)
         self.V = nn.Linear(input_dim, hidden_dim)
 
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Linear(hidden_dim * 4, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-        )
+        self.ffn = nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(),
+            nn.Linear(hidden_dim * 4, hidden_dim), nn.LayerNorm(hidden_dim), )
 
     def forward(self, features, video_mask):
         B, T, N, D = features.shape
@@ -447,6 +367,7 @@ class FrameAttention(nn.Module):
 
         return context
 
+
 class ISLR_V3(nn.Module):
     def __init__(self, channels=(64, 64, 128, 128, 256, 256), num_classes=2000):
         super().__init__()
@@ -460,12 +381,10 @@ class ISLR_V3(nn.Module):
         self.gcn_block = nn.ModuleList([
             # GrapConvBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in range(len(channels) - 1)
             GCN_Block(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in
-            range(len(channels) - 1)
-        ])
+            range(len(channels) - 1)])
 
-        self.attn_block = nn.ModuleList([
-            FrameAttention(input_dim=gcn_out_dim, hidden_dim=256, dropout=0.1) for i in range(6)
-        ])
+        self.attn_block = nn.ModuleList(
+            [FrameAttention(input_dim=gcn_out_dim, hidden_dim=256, dropout=0.1) for i in range(6)])
 
         self.frame_attention = FrameAttention(input_dim=gcn_out_dim, hidden_dim=256, dropout=0.1)
 
@@ -501,55 +420,26 @@ class ISLR_V3(nn.Module):
 
         return logits, loss
 
+
 class ISLR_V4(nn.Module):
-    def __init__(
-            self,
-            input_dim=_NUM_NODE * _COORD_DIM * 2,
-            hidden_dim=256,
-            num_encoder_layers=6,
-            nhead=8,
-            dim_feedforward=512 * 4,
-            dropout=0.2,
-            max_seq_len=5000,
-            num_classes=1000
-    ):
+    def __init__(self, input_dim=_NUM_NODE * _COORD_DIM * 2, hidden_dim=256, num_encoder_layers=6, nhead=8,
+            dim_feedforward=512 * 4, dropout=0.2, max_seq_len=5000, num_classes=1000):
         super().__init__()
 
         d_model = hidden_dim
 
-        self.shape_projection = nn.Sequential(
-            nn.Linear(int(input_dim / 2), d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model)
-        )
+        self.shape_projection = nn.Sequential(nn.Linear(int(input_dim / 2), d_model), nn.GELU(), nn.Dropout(dropout),
+            nn.LayerNorm(d_model))
 
-        self.position_projection = nn.Sequential(
-            nn.Linear(int(input_dim / 2), d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model)
-        )
+        self.position_projection = nn.Sequential(nn.Linear(147, d_model), nn.GELU(), nn.Dropout(dropout),
+            nn.LayerNorm(d_model))
 
-        self.pos_encoder = PositionalEncoding(
-            d_model=d_model,
-            max_len=max_seq_len,
-            dropout=dropout
-        )
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True
-        )
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
+            dropout=dropout, batch_first=True, norm_first=True)
 
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=num_encoder_layers
-        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
 
         self.encoder_norm = nn.LayerNorm(d_model)
         self.classifier = nn.Linear(d_model, num_classes)
@@ -559,18 +449,16 @@ class ISLR_V4(nn.Module):
             raise ValueError("video_mask is required")
 
         video_mask = video_mask.bool()
-
-        position_features = features[:, :, :_NUM_NODE * _COORD_DIM]
+        position_features = features[:, :, :147]
         shape_features = features[:, :, _NUM_NODE * _COORD_DIM:]
 
         x_position = self.position_projection(position_features)
-        x_shape = self.shape_projection(shape_features)
+        # x_shape = self.shape_projection(shape_features)
 
-        x = x_shape + x_position
-        x = self.pos_encoder(x)  #   (B, T, d_model)
-        x = self.encoder(
-            x,
-            src_key_padding_mask=~video_mask  # True = ignore (padding)
+        # x = x_shape + x_position
+        x = x_position
+        x = self.pos_encoder(x)  # (B, T, d_model)
+        x = self.encoder(x, src_key_padding_mask=~video_mask  # True = ignore (padding)
         )  # (B, T, d_model)
         x = self.encoder_norm(x)  # (B, T, d_model)
 
@@ -578,7 +466,6 @@ class ISLR_V4(nn.Module):
 
     def forward(self, features, labels=None, video_mask=None):
         B, T, _ = features.shape
-
 
         x = self.encode(features, video_mask)
         pooled = masked_mean_pool(x, video_mask.bool())
@@ -589,9 +476,3 @@ class ISLR_V4(nn.Module):
             loss = F.cross_entropy(logits, labels)
 
         return logits, loss
-
-    @torch.no_grad()
-    def predict(self, features, video_mask=None, top_k=1):
-        logits = self.forward(features, video_mask=video_mask).logits
-        if top_k == 1:
-            return logits.argmax(dim=-1)

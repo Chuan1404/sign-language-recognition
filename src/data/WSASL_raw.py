@@ -25,10 +25,7 @@ class WLASLLandmarksDataset(Dataset):
 
         for index, video_name in enumerate(all_video_names):
 
-            video_dir = os.path.join(
-                feature_dir,
-                video_name
-            )
+            video_dir = os.path.join(feature_dir, video_name)
 
             if not os.path.isdir(video_dir):
                 continue
@@ -39,18 +36,11 @@ class WLASLLandmarksDataset(Dataset):
 
             text_path = os.path.join(video_dir, "gloss.txt")
 
-            if (
-                    os.path.exists(left_hand_path)
-                    and os.path.exists(right_hand_path)
-                    and os.path.exists(pose_path)
-                    and os.path.exists(text_path)
-            ):
-                self.samples.append({
-                    "left_hand_path": left_hand_path,
-                    "right_hand_path": right_hand_path,
-                    "pose_path": pose_path,
-                    "text_path": text_path,
-                })
+            if (os.path.exists(left_hand_path) and os.path.exists(right_hand_path) and os.path.exists(
+                pose_path) and os.path.exists(text_path)):
+                self.samples.append(
+                    {"left_hand_path": left_hand_path, "right_hand_path": right_hand_path, "pose_path": pose_path,
+                        "text_path": text_path, })
 
     def __len__(self):
         return len(self.samples)
@@ -65,10 +55,9 @@ class WLASLLandmarksDataset(Dataset):
 
         T = left_features.shape[0]
 
-        pose_features = pose_features.reshape(T, 33, 3)[: ,:, :_COORD_DIM]
-        left_features = left_features.reshape(T, 21, 3)[: ,:, :_COORD_DIM]
-        right_features = right_features.reshape(T, 21, 3)[: ,:, :_COORD_DIM]
-
+        pose_features = pose_features.reshape(T, 33, 3)[:, :, :_COORD_DIM]
+        left_features = left_features.reshape(T, 21, 3)[:, :, :_COORD_DIM]
+        right_features = right_features.reshape(T, 21, 3)[:, :, :_COORD_DIM]
 
         with open(item["text_path"], "r", encoding="utf-8") as f:
             gloss = f.read().strip()
@@ -94,7 +83,7 @@ class WLASLLandmarksDataset(Dataset):
         # right_features = right_features[start_frame:end_frame]
         # pose_features = pose_features[start_frame:end_frame]
 
-        position_features = self.fusion_component.fuse(pose_features, left_features, right_features)
+        position_features = self.fusion_component.fuse_follow_position(pose_features, left_features, right_features)
         shape_features = self.fusion_component.fuse_follow_shape(pose_features, left_features, right_features)
 
         features = np.concatenate([position_features, shape_features], axis=-1)

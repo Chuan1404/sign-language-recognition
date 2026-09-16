@@ -17,10 +17,10 @@ import json
 
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
-LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
+LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = f"contest_2000_v4_2.pt"
+MODEL_NAME = f"contest_100_v4.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
@@ -78,6 +78,7 @@ def main(args):
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=LR,

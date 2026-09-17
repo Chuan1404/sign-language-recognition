@@ -64,24 +64,42 @@ class FusionComponent:
         return fused_flat
 
     def fuse_follow_position(self, pose_feature, left_feature, right_feature):
+
         T = pose_feature.shape[0]
+
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
-        left_present_mask = ~np.all(left == 0, axis=-1)
-        right_present_mask = ~np.all(right == 0, axis=-1)
-        pose_present_mask = ~np.all(pose == 0, axis=-1)
+        left_present_mask = ~np.all(left == 0, axis=-1)  # (T, 21)
+        right_present_mask = ~np.all(right == 0, axis=-1)  # (T, 21)
+        pose_present_mask = ~np.all(pose == 0, axis=-1)  # (T, 33)
 
         scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
         scale = np.where(scale > _EPS, scale, 1.0)
         scale = scale[:, np.newaxis, :]
 
-        root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
+        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
 
-        pose = (pose - root) / scale
-        left = (left - root) / scale
-        right = (right - root) / scale
+        left_wrist_present = left_present_mask[:, 0]
+        right_wrist_present = right_present_mask[:, 0]
+
+        left_wrist = left[:, 0:1, :]
+        right_wrist = right[:, 0:1, :]
+
+        hand_root = (left_wrist + right_wrist) / 2
+        hand_root = np.where(
+            (left_wrist_present & ~right_wrist_present)[:, None, None], left_wrist, hand_root
+        )  # chỉ trái present -> lấy cổ tay trái
+        hand_root = np.where(
+            (right_wrist_present & ~left_wrist_present)[:, None, None], right_wrist, hand_root
+        )  # chỉ phải present -> lấy cổ tay phải
+        # Cả 2 cổ tay đều thiếu -> hand_root = (0+0)/2 = 0, giữ nguyên vì không có
+        # gốc nào tốt hơn để chọn — không phải bug, chỉ là fallback trung tính.
+
+        pose = (pose - pose_root) / scale
+        left = (left - hand_root) / scale
+        right = (right - hand_root) / scale
 
         left = left * left_present_mask[..., None]
         right = right * right_present_mask[..., None]
@@ -90,10 +108,41 @@ class FusionComponent:
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
 
         fused_coords = np.concatenate([pose, left, right], axis=1)
-
-        fused_flat = fused_coords.reshape(T, -1)  # (T, D)
+        fused_flat = fused_coords.reshape(T, -1)
 
         return fused_flat
+
+    # def fuse_follow_position(self, pose_feature, left_feature, right_feature):
+    #     T = pose_feature.shape[0]
+    #
+    #     pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
+    #     left = left_feature.reshape(T, 21, _COORD_DIM).copy()
+    #     right = right_feature.reshape(T, 21, _COORD_DIM).copy()
+    #
+    #     left_present_mask = ~np.all(left == 0, axis=-1)
+    #     right_present_mask = ~np.all(right == 0, axis=-1)
+    #     pose_present_mask = ~np.all(pose == 0, axis=-1)
+    #
+    #     scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
+    #     scale = np.where(scale > _EPS, scale, 1.0)
+    #     scale = scale[:, np.newaxis, :]
+    #
+    #     root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
+    #
+    #     pose = (pose - root) / scale
+    #     left = (left - root) / scale
+    #     right = (right - root) / scale
+    #
+    #     left = left * left_present_mask[..., None]
+    #     right = right * right_present_mask[..., None]
+    #     pose = pose * pose_present_mask[..., None]
+    #
+    #     pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
+    #
+    #     fused_coords = np.concatenate([pose, left, right], axis=1)
+    #     fused_flat = fused_coords.reshape(T, -1)  # (T, D)
+    #
+    #     return fused_flat
 
     def fuse_follow_velocity(self, pose_feature, left_feature, right_feature):
         T = pose_feature.shape[0]

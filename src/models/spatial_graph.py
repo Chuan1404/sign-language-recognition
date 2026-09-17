@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config import _N_POSE, _N_HAND, _NUM_NODE
+from config import _N_POSE, _N_HAND, _NUM_NODE, _REMOVE_POSE_IDX
 
 
 _HAND_BONES = [
@@ -39,7 +39,6 @@ _POSE_BONES = [
     (22, 16),
     (23, 11), (23, 24),
     (24, 12), (24, 22),
-
 ]
 
 _LEFT_WRIST = _N_POSE
@@ -52,7 +51,23 @@ CUSTOM_EDGES = [
     # (9, 11),
     # (10, 12),
     (0, 11), (0, 12)
+]
 
+remove_set = set(_REMOVE_POSE_IDX)
+
+filtered_bones = [
+    (a, b) for (a, b) in _POSE_BONES
+    if a not in remove_set and b not in remove_set
+]
+
+all_nodes = sorted(set(n for bone in _POSE_BONES for n in bone))
+remaining_nodes = sorted(n for n in all_nodes if n not in remove_set)
+
+old_to_new = {old: new for new, old in enumerate(remaining_nodes)}
+
+remapped_bones = [
+    (old_to_new[a], old_to_new[b])
+    for (a, b) in filtered_bones
 ]
 
 FULL_BODY_EDGES = (
@@ -92,8 +107,9 @@ class TemporalConv(nn.Module):
 
         pad = (kernel_size - 1) // 2
         self.conv = nn.Conv2d(
-            channels, channels,
-            kernel_size=(kernel_size, 1),
+            out_channels=channels,
+            in_channels=channels,
+            kernel_size=(kernel_size, 1), # (out_channels, in_channels, kernel_H, kernel_W)
             padding=(pad, 0),
             stride=(stride, 1),
             bias=False
@@ -104,8 +120,9 @@ class TemporalConv(nn.Module):
     def forward(self, x):
         # x: (B, T, N, C) → (B, C, T, N)
         x = x.permute(0, 3, 1, 2)
-        x = self.drop(self.conv(x))
+        x = self.conv(x)
         x = self.bn(x)
+        x = self.drop(x)
         x = x.permute(0, 2, 3, 1)  # (B, T, N, C)
         return x
 
@@ -117,11 +134,11 @@ class GraphConv(nn.Module):
         # asj = normalize_adjacency(base_adjacency)
         self.V = num_nodes
 
-        self.register_buffer("adj", base_adjacency)  # (N, N)
+        # self.register_buffer("adj", base_adjacency)  # (N, N)
         self.linear = nn.Linear(in_ch, out_ch)
 
         self.register_buffer("I", torch.eye(self.V))
-        self.register_buffer('A', base_adjacency)
+        # self.register_buffer('A', base_adjacency)
 
         self.learnable_A = nn.Parameter(
             torch.tensor(base_adjacency, dtype=torch.float32)
@@ -129,7 +146,10 @@ class GraphConv(nn.Module):
         self.decouple_p = decouple_p
 
     def _raw_A(self):
-        return  self.I + self.learnable_A
+        A = self.I + self.learnable_A
+        A = 0.5 * (A + A.transpose(-1, -2))  # ép đối xứng
+        A = F.relu(A)  # ép không âm
+        return A
 
     def _normalized_A(self, A_raw):
         deg = A_raw.sum(-1).clamp(min=1e-6)          # (p, V)
@@ -186,8 +206,6 @@ class GrapConvBlock(nn.Module):
 
         return x
 
-
-
 class GCN_Block(nn.Module):
     def __init__(self, in_ch, out_ch, num_nodes, base_adjacency):
         super().__init__()
@@ -205,6 +223,8 @@ class GCN_Block(nn.Module):
         )
 
         self.act = nn.GELU()
+        self.tcn = TemporalConv(out_ch)
+        self.residual = nn.Identity() if in_ch == out_ch else nn.Linear(in_ch, out_ch)
 
     def _raw_A(self):
         return  self.I + self.learnable_A
@@ -217,13 +237,16 @@ class GCN_Block(nn.Module):
         return D_inv_sqrt @ A_raw @ D_inv_sqrt
 
     def forward(self, x, mask = None):
+        res = self.residual(x)
         x = self.linear(x)
 
         A_raw = self._raw_A()
         A_norm = self._normalized_A(A_raw)
 
         x = torch.einsum('vw,btwc->btvc', A_norm, x)
+        x = self.act(x)
 
+        x = self.tcn(x) + res
         x = self.act(x)
 
         if mask is not None:

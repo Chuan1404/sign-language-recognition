@@ -63,9 +63,9 @@ class WLASLLandmarksDataset(Dataset):
             gloss = f.read().strip()
         label_id = self.gloss2idx[gloss]
 
-        position_features = self.fusion_component.fuse_follow_position(pose_features, left_features, right_features)
-        vel_features = self.fusion_component.fuse_follow_velocity(pose_features, left_features, right_features)
+        # position_features = self.fusion_component.fuse(pose_features, left_features, right_features)
+        # vel_features = self.fusion_component.fuse_follow_velocity(pose_features, left_features, right_features)
         shape_features = self.fusion_component.fuse_follow_shape(pose_features, left_features, right_features)
 
-        features = np.concatenate([position_features, shape_features, vel_features], axis=-1)
+        features = np.concatenate([shape_features], axis=-1)
         return features, label_id

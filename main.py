@@ -16,7 +16,7 @@ from config import ROOT, DEVICE
 import json
 
 
-DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
+DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_0_6")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")
@@ -74,7 +74,7 @@ def main(args):
         num_classes=num_classes,
     )
 
-    model = ISLR_V4(**model_kwargs).to(DEVICE)
+    model = ISLR_V3(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")

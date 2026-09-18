@@ -336,45 +336,60 @@ class ISLR_V2(nn.Module):
 
 
 class FrameAttention(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256, dropout=0.1):
+    def __init__(self, input_dim, hidden_dim=256, num_heads=8, dropout=0.1):
         super().__init__()
+        assert hidden_dim % num_heads == 0, "hidden_dim phải chia hết cho num_heads"
+
+        self.num_heads = num_heads
         self.d_out = hidden_dim
+        self.d_head = hidden_dim // num_heads
         self.dropout = nn.Dropout(dropout)
 
         self.Q = nn.Linear(input_dim, hidden_dim)
         self.K = nn.Linear(input_dim, hidden_dim)
         self.V = nn.Linear(input_dim, hidden_dim)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)  # gộp các head lại
 
-        self.ffn = nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(),
-                                 nn.Linear(hidden_dim * 4, hidden_dim), nn.LayerNorm(hidden_dim), )
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(),
+            nn.Linear(hidden_dim * 4, hidden_dim), nn.LayerNorm(hidden_dim),
+        )
 
     def forward(self, features, video_mask):
-        B, T, N, D = features.shape
+        B, T, D = features.shape
 
-        x = features.permute(0, 2, 1, 3)
+        x = features
 
-        Q = self.Q(x)
+        Q = self.Q(x)  # (B, T, hidden_dim)
         K = self.K(x)
         V = self.V(x)
 
-        attn_score = Q @ K.transpose(-2, -1)
+        # Tách thành nhiều head: (B, T, hidden_dim) -> (B, num_heads, T, d_head)
+        Q = Q.view(B, T, self.num_heads, self.d_head).transpose(1, 2)
+        K = K.view(B, T, self.num_heads, self.d_head).transpose(1, 2)
+        V = V.view(B, T, self.num_heads, self.d_head).transpose(1, 2)
 
-        mask = video_mask[:, None, None, :].bool()
+        attn_score = Q @ K.transpose(-2, -1)  # (B, num_heads, T, T)
+
+        mask = video_mask[:, None, None, :].bool()  # (B, 1, 1, T) — khớp (B, num_heads, T, T)
         attn_score = attn_score.masked_fill(~mask, float("-inf"))
 
-        attn_weight = F.softmax(attn_score / self.d_out ** 0.5, dim=-1)
+        attn_weight = F.softmax(attn_score / self.d_head ** 0.5, dim=-1)  # chia theo d_head, không phải d_out
         attn_weight = self.dropout(attn_weight)
 
-        context = attn_weight @ V
-        context = context.permute(0, 2, 1, 3)
+        context = attn_weight @ V  # (B, num_heads, T, d_head)
 
-        context = self.ffn(context)
+        # Gộp các head lại: (B, num_heads, T, d_head) -> (B, T, hidden_dim)
+        context = context.transpose(1, 2).contiguous().view(B, T, self.d_out)
+        context = self.out_proj(context)
+
+        context = self.ffn(context)  # (B, T, hidden_dim)
 
         return context
 
 
 class ISLR_V3(nn.Module):
-    def __init__(self, channels=(64, 64, 128, 128), num_classes=2000):
+    def __init__(self, channels=(32, 32, 64, 64), num_classes=2000):
         super().__init__()
 
         self.num_nodes = _NUM_NODE
@@ -391,7 +406,7 @@ class ISLR_V3(nn.Module):
 
         self.frame_attention = FrameAttention(input_dim=gcn_out_dim, hidden_dim=256, dropout=0.1)
 
-        self.classifier = nn.Linear(gcn_out_dim, num_classes)
+        self.classifier = nn.Linear(256, num_classes)
 
     def forward(self, features, labels=None, video_mask=None):
         B, T, _ = features.shape
@@ -400,22 +415,9 @@ class ISLR_V3(nn.Module):
         for block in self.gcn_block:
             features = block(features, video_mask)
 
-        # extract_features = self.frame_attention(extract_features, video_mask)
-        # for block in self.attn_block:
-        #     features = block(features, video_mask)
-
-        # B T N C -> B N T C
-        # extract_features = extract_features.transpose(1, 2)
-        # split_features = extract_features.reshape(B, self.num_nodes, T, 2 ,-1)
-
-        # first split feature will be applied Self Attention
-        # second split feature will be applied TCN
-
-        # Merge feature
-        # print(split_features.shape)
-
         features = features.mean(dim=-2)
 
+        features = self.frame_attention(features, video_mask)
         features = masked_mean_pool(features, video_mask)
 
         logits = self.classifier(features)

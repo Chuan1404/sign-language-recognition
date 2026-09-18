@@ -16,7 +16,7 @@ from config import ROOT, DEVICE
 import json
 
 
-DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_0_6")
+DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")

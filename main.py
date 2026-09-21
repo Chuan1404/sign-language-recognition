@@ -1,14 +1,12 @@
 import os
 
-from models import ISLR_V5
-
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from torch.utils.data import DataLoader
 from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.data.augmentation import AugmentedSkeletonDataset, SkeletonAugmentor
-from src.models.SLT_model import ISLR_V2, ISLR_V3, ISLR_V4
+from src.models.SLT_model import ISLR_V2, ISLR_V3, ISLR_V4, ISLR_V5, ISLR_V6
 from src.utils import FusionComponent
 from src.training.train import collate_fn, train_one_epoch, validate
 

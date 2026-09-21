@@ -70,32 +70,77 @@ class FusionComponent:
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
-        left_present_mask = ~np.all(left == 0, axis=-1)
-        right_present_mask = ~np.all(right == 0, axis=-1)
-        pose_present_mask = ~np.all(pose == 0, axis=-1)
+        # --------------------------------------------------
+        # 1. Landmark presence masks
+        # --------------------------------------------------
+        pose_present_mask = ~np.all(pose == 0, axis=-1)  # [T, 33]
+        left_present_mask = ~np.all(left == 0, axis=-1)  # [T, 21]
+        right_present_mask = ~np.all(right == 0, axis=-1)  # [T, 21]
 
-        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
+        # --------------------------------------------------
+        # 2. Shoulder-based scale
+        # --------------------------------------------------
+        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1,
+            keepdims=True)  # [T, 1]
+
         scale = np.where(scale > _EPS, scale, 1.0)
-        scale = scale[:, np.newaxis, :]
+        scale = scale[:, np.newaxis, :]  # [T, 1, 1]
 
-        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
-        left_root = left[:, 0:1, :]
-        right_root = right[:, 0:1, :]
+        # --------------------------------------------------
+        # 3. Root points
+        # --------------------------------------------------
+        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[
+            :, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2  # [T, 1, 3]
 
-        root = (pose_root + left_root + right_root) / 3
+        left_root = left[:, 0:1, :]  # [T, 1, 3]
+        right_root = right[:, 0:1, :]  # [T, 1, 3]
 
+        # --------------------------------------------------
+        # 4. Root presence masks
+        # --------------------------------------------------
+        pose_root_present = (pose_present_mask[:, _LEFT_SHOULDER_IDX] & pose_present_mask[:, _RIGHT_SHOULDER_IDX])[
+            :, None, None]  # [T, 1, 1]
+
+        left_root_present = (left_present_mask[:, 0])[:, None, None]  # [T, 1, 1]
+
+        right_root_present = (right_present_mask[:, 0])[:, None, None]  # [T, 1, 1]
+
+        # --------------------------------------------------
+        # 5. Calculate common root
+        # --------------------------------------------------
+        root_sum = (pose_root * pose_root_present + left_root * left_root_present + right_root * right_root_present)
+
+        root_count = (
+                pose_root_present.astype(np.float32) + left_root_present.astype(np.float32) + right_root_present.astype(
+            np.float32))
+
+        root = root_sum / np.maximum(root_count, 1.0)
+
+        # --------------------------------------------------
+        # 6. Root + scale normalization
+        # --------------------------------------------------
         pose = (pose - root) / scale
         left = (left - root) / scale
         right = (right - root) / scale
 
+        # --------------------------------------------------
+        # 7. Restore missing landmarks to zero
+        # --------------------------------------------------
+        pose = pose * pose_present_mask[..., None]
         left = left * left_present_mask[..., None]
         right = right * right_present_mask[..., None]
-        pose = pose * pose_present_mask[..., None]
 
+        # --------------------------------------------------
+        # 8. Remove unnecessary pose landmarks
+        # --------------------------------------------------
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
 
+        # --------------------------------------------------
+        # 9. Fuse
+        # --------------------------------------------------
         fused_coords = np.concatenate([pose, left, right], axis=1)
-        fused_flat = fused_coords.reshape(T, -1)  # (T, D)
+
+        fused_flat = fused_coords.reshape(T, -1)
 
         return fused_flat
 

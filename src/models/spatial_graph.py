@@ -121,86 +121,6 @@ class TemporalConv(nn.Module):
         x = x.permute(0, 2, 3, 1)  # (B, T, N, C)
         return x
 
-# class GraphConv(nn.Module):
-#
-#     def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, decouple_p=4):
-#         super().__init__()
-#
-#         # asj = normalize_adjacency(base_adjacency)
-#         self.V = num_nodes
-#
-#         # self.register_buffer("adj", base_adjacency)  # (N, N)
-#         self.linear = nn.Linear(in_ch, out_ch)
-#
-#         self.register_buffer("I", torch.eye(self.V))
-#         # self.register_buffer('A', base_adjacency)
-#
-#         self.learnable_A = nn.Parameter(
-#             torch.tensor(base_adjacency, dtype=torch.float32)
-#         )
-#         self.decouple_p = decouple_p
-#
-#     def _raw_A(self):
-#         A = self.I + self.learnable_A
-#         A = 0.5 * (A + A.transpose(-1, -2))  # ép đối xứng
-#         A = F.relu(A)  # ép không âm
-#         return A
-#
-#     def _normalized_A(self, A_raw):
-#         deg = A_raw.sum(-1).clamp(min=1e-6)          # (p, V)
-#         d_inv_sqrt = deg.pow(-0.5)
-#         D_inv_sqrt = torch.diag_embed(d_inv_sqrt)     # (p, V, V)
-#
-#         return D_inv_sqrt @ A_raw @ D_inv_sqrt        # (p, V, V)
-#
-#     def forward(self, x):
-#         x = self.linear(x)
-#
-#         A_raw = self._raw_A()  # (p, V, V)
-#         A_norm = self._normalized_A(A_raw)
-#
-#         out = torch.einsum('vw,btwc->btvc', A_norm, x)
-#
-#         return out, A_raw
-#
-# class GrapConvBlock(nn.Module):
-#     def __init__(self, in_ch, out_ch, num_nodes, base_adjacency):
-#         super().__init__()
-#
-#         self.gcn = GraphConv(
-#             in_ch,
-#             out_ch,
-#             num_nodes,
-#             base_adjacency
-#         )
-#
-#         self.tcn = TemporalConv(
-#             channels=out_ch,
-#             kernel_size=9
-#         )
-#
-#         self.act = nn.GELU()
-#
-#         self.residual = nn.Linear(in_ch, out_ch)
-#         if in_ch != out_ch:
-#             self.residual = nn.Linear(in_ch, out_ch)
-#         else:
-#             self.residual = nn.Identity()
-#
-#     def forward(self, x, mask = None):
-#         residual = self.residual(x)
-#
-#         x, _ = self.gcn(x)
-#         x = self.act(x)
-#
-#         x = self.tcn(x)
-#         x = self.act(x + residual)
-#
-#         if mask is not None:
-#             x = x * mask[:, :, None, None].to(x.dtype)
-#
-#         return x
-
 class GCNBlock(nn.Module):
     def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, dropout=0.0):
         super().__init__()
@@ -217,7 +137,7 @@ class GCNBlock(nn.Module):
         self.residual = nn.Identity() if in_ch == out_ch else nn.Linear(in_ch, out_ch)
 
     def _normalized_A(self):
-        A = F.relu(self.A + self.A_delta) + self.I
+        A = F.relu(self.A + self.A_delta * (self.A > 0)) + self.I
         d = A.sum(-1).clamp(min=1e-6).pow(-0.5)
         return d[:, None] * A * d[None, :]
 

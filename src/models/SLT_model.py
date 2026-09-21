@@ -261,7 +261,7 @@ class FrameAttention(nn.Module):
         return context
 
 class FusionStem(nn.Module):
-    def __init__(self, in_ch, out_ch, num_nodes, dropout=0.0):
+    def __init__(self, in_ch, out_ch, num_nodes, dropout=0.1):
         super().__init__()
         self.N = num_nodes
         def branch():
@@ -271,9 +271,11 @@ class FusionStem(nn.Module):
 
     def forward(self, x):                      # (B, T, 3N, C_in)
         N = self.N
-        return (self.pos(x[:, :, :N])
-                + self.shp(x[:, :, N:2*N])
-                + self.avg(x[:, :, 2*N:3*N]))
+        # return (self.pos(x[:, :, :N])
+        #         + self.shp(x[:, :, N:2*N])
+        #         + self.avg(x[:, :, 2*N:3*N]))
+
+        return x[:, :, :N] + x[:, :, N:2 * N] + x[:, :, 2 * N:3 * N]
 
 class ISLR_V3(nn.Module):
     def __init__(self, channels=(64, 64, 128, 128), num_classes=2000):
@@ -289,7 +291,7 @@ class ISLR_V3(nn.Module):
 
         self.gcn_block = nn.ModuleList([
             SelfPacingDroppingBlock(in_ch=channels[i], out_ch=channels[i + 1], num_nodes=self.num_nodes, base_adjacency=self.adjacency_matrix)
-            for i in range(1, len(channels) - 1)
+            for i in range(len(channels) - 1)
         ])
 
         # self.gcn_block = nn.ModuleList([
@@ -330,7 +332,7 @@ class ISLR_V3(nn.Module):
 
 class ISLR_V4(nn.Module):
     def __init__(self, input_dim=_NUM_NODE * _COORD_DIM, hidden_dim=256, num_encoder_layers=6, nhead=8,
-                 dim_feedforward=256 * 4, dropout=0.2, max_seq_len=5000, num_classes=1000):
+                 dim_feedforward=256 * 8, dropout=0.2, max_seq_len=5000, num_classes=1000):
         super().__init__()
 
         d_model = hidden_dim
@@ -368,7 +370,6 @@ class ISLR_V4(nn.Module):
         position_features = features[:, :, :self.num_nodes * 2]
         shape_features = features[:, :, self.num_nodes * 2:self.num_nodes * 4]
         average_features = features[:, :, self.num_nodes * 4:self.num_nodes * 6]
-        velocity_features = features[:, :, self.num_nodes * 6:]
 
         # position_features = (vel_features * position_features).reshape(B, T, self.num_nodes * 2)
         # shape_features = (vel_features * shape_features).reshape(B, T, self.num_nodes * 2)
@@ -376,9 +377,9 @@ class ISLR_V4(nn.Module):
         x_position = self.position_projection(position_features)
         x_shape = self.shape_projection(shape_features)
         x_average = self.average_projection(average_features)
-        x_velocity = self.velocity_projection(velocity_features)
+        # x_velocity = self.velocity_projection(velocity_features)
 
-        x = (x_position + x_shape + x_average + x_velocity)
+        x = (x_position + x_shape + x_average)
 
         x = self.pos_encoder(x)  # (B, T, d_model)
         x = self.encoder(x, src_key_padding_mask=~video_mask  # True = ignore (padding)
@@ -427,8 +428,8 @@ class CrossAttentionLayer(nn.Module):
 
 
 class ISLR_V5(nn.Module):
-    def __init__(self, gcn_channels=(64, 64, 128, 128), d_model=128, num_encoder_layers=6, nhead=8,
-                 dim_feedforward=256 * 4, dropout=0.2, max_seq_len=5000, num_cross_layers=2, num_classes=1000):
+    def __init__(self, gcn_channels=(128, 128, 256, 256), d_model=256, num_encoder_layers=6, nhead=8,
+                 dim_feedforward=256 * 8, dropout=0.2, max_seq_len=5000, num_classes=1000):
         super().__init__()
         self.num_nodes = _NUM_NODE
 
@@ -438,8 +439,8 @@ class ISLR_V5(nn.Module):
 
         self.stem = FusionStem(channels[0], channels[1], self.num_nodes)
         self.gcn_block = nn.ModuleList([
-            SelfPacingDroppingBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix)
-            for i in range(1, len(channels) - 1)])
+            GCNBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix)
+            for i in range(len(channels) - 1)])
         # self.gcn_proj = nn.Sequential(nn.Linear(channels[-1], d_model), nn.LayerNorm(d_model))
 
         # ---------------- Stream 2: Transformer (V4) ----------------
@@ -458,12 +459,7 @@ class ISLR_V5(nn.Module):
 
         # ---------------- Cross-attention fusion ----------------
         # gcn <- transformer  và  transformer <- gcn
-        self.cross_g2t = nn.ModuleList(
-            [CrossAttentionLayer(d_model, nhead, dim_feedforward, dropout) for _ in range(num_cross_layers)])
-        # self.cross_t2g = nn.ModuleList(
-        #     [CrossAttentionLayer(d_model, nhead, dim_feedforward, dropout) for _ in range(num_cross_layers)])
-        # self.norm_g = nn.LayerNorm(d_model)
-        self.norm_t = nn.LayerNorm(d_model)
+        self.norm_g = nn.LayerNorm(d_model)
 
         # ---------------- Classifier ----------------
         self.classifier = nn.Sequential(nn.LayerNorm(d_model), nn.Dropout(dropout),
@@ -475,9 +471,10 @@ class ISLR_V5(nn.Module):
 
         for block in self.gcn_block:
             features = block(features, video_mask)
+
         features = features.mean(dim=-2)  # (B, T, gcn_out)
         # return self.gcn_proj(x)  # (B, T, d_model)
-        return features
+        return self.norm_g(features)
 
     # ---- stream 2 ----
     def encode_transformer(self, features, video_mask):
@@ -486,8 +483,24 @@ class ISLR_V5(nn.Module):
         x_position = self.position_projection(features[:, :, :self.num_nodes * 2])
         x_shape = self.shape_projection(features[:, :, self.num_nodes * 2:self.num_nodes * 4])
         x_average = self.average_projection(features[:, :, self.num_nodes * 4:self.num_nodes * 6])
+        x_gcn = self.encode_gcn(features.clone().reshape(B, T, self.num_nodes * 3, _COORD_DIM), video_mask)
 
-        x = x_position + x_shape + x_average
+        # x = x_average                                     # best=73.00% loss=1.2133 75.00%
+        # x = x_average + x_gcn                             # best=66.00% loss=1.4254 95.00%
+
+        # x = x_position                                    # best=72.00% loss=1.2574 75.00%
+        # x = x_position + x_gcn                            # best=70.00% loss=1.3490 71.00%
+
+        # x = x_shape                                       # best=66.00% loss=1.2873 67.00%
+        # x = x_shape + x_gcn                               # best=59.00% loss=1.3645 67.00%
+
+        # x = x_shape + x_average                           # best=73.00% loss=1.1507 75.00%
+        # x = x_shape + x_average + x_gcn                   # best=71.00% loss=1.1686 74.00
+
+        # x = x_shape + x_average + x_position              # best=75.00% loss=1.0840 77.00%
+        # x = x_shape + x_average + x_position + x_gcn      # best=71.00% loss=1.1394 78.00%
+        x = x_gcn                                           # best=36.00% loss=2.4907 37.00%
+
         x = self.pos_encoder(x)
         x = self.encoder(x, src_key_padding_mask=~video_mask)
         return self.encoder_norm(x)  # (B, T, d_model)
@@ -496,22 +509,176 @@ class ISLR_V5(nn.Module):
         if video_mask is None:
             raise ValueError("video_mask is required")
         video_mask = video_mask.bool()
-        pad_mask = ~video_mask
 
         B, T, _ = features.shape
 
-        g = self.encode_gcn(features.clone().reshape(B, T, self.num_nodes * 3, _COORD_DIM), video_mask)
         t = self.encode_transformer(features, video_mask)
 
-        for t2g in self.cross_g2t:
-            t_new = t2g(t, g, pad_mask)  # Transformer hỏi GCN
-            t = t_new
+        t = masked_mean_pool(t, video_mask)  # (B, d_model)
 
-        # g = masked_mean_pool(self.norm_g(g), video_mask)  # (B, d_model)
-        t = masked_mean_pool(self.norm_t(t), video_mask)  # (B, d_model)
-
-        # pooled = torch.cat([g, t], dim=-1)  # (B, 2*d_model)
         logits = self.classifier(t)
+
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+
+        return logits, loss
+
+class SpatialGCNBlock(nn.Module):
+    """
+    CHỈ GCN theo KHÔNG GIAN (giữa các node trong CÙNG 1 frame), áp dụng ĐỘC
+    LẬP cho từng frame — KHÔNG có TCN trộn thông tin qua các frame khác nhau
+    (khác SelfPacingDroppingBlock trước đây luôn kèm TCN ngay sau GCN, theo
+    yêu cầu #1: học thời gian được tách hẳn ra 2 nhánh riêng ở tầng sau).
+    """
+
+    def __init__(self, in_ch, out_ch, num_nodes, adjacency, p=4, dropout=0.1):
+        super().__init__()
+        self.p = p
+        self.phi = nn.Linear(in_ch, out_ch)
+        self.A = nn.Parameter(adjacency.clone().unsqueeze(0).repeat(p, 1, 1))   # (p, N, N)
+        self.bn = nn.BatchNorm1d(out_ch)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+
+    def _normalize(self, A):
+        deg = A.sum(dim=-1).clamp(min=1e-6)
+        D = torch.diag_embed(deg.pow(-0.5))
+        return D @ A @ D
+
+    def forward(self, x):
+        # x: (B, T, N, C_in) -> (B, T, N, C_out)
+        B, T, N, _ = x.shape
+        feat = self.phi(x)
+        out = 0.0
+        for k in range(self.p):
+            A_norm = self._normalize(self.A[k])
+            out = out + torch.einsum("nm,btmc->btnc", A_norm, feat)
+        out = out / self.p
+        out = self.bn(out.reshape(B * T * N, -1)).reshape(B, T, N, -1)
+        return self.drop(self.act(out))
+
+
+class ShortTermTCN(nn.Module):
+    """Nửa kênh đầu — học chuyển động NGẮN HẠN bằng Conv1d theo thời gian."""
+
+    def __init__(self, channels, kernel_size=9, dropout=0.1):
+        super().__init__()
+        pad = (kernel_size - 1) // 2
+        self.conv = nn.Conv1d(channels, channels, kernel_size=kernel_size, padding=pad, bias=False)
+        self.bn = nn.BatchNorm1d(channels)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # x: (B, T, C) -> (B, T, C)
+        x = x.transpose(1, 2)                        # (B, C, T)
+        x = self.drop(self.act(self.bn(self.conv(x))))
+        return x.transpose(1, 2)
+
+
+class LongTermTransformer(nn.Module):
+    """Nửa kênh còn lại — học chuyển động DÀI HẠN bằng self-attention toàn chuỗi."""
+
+    def __init__(self, d_model, nhead=8, dim_feedforward=1024, num_layers=4, dropout=0.1, max_seq_len=5000):
+        super().__init__()
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
+            dropout=dropout, batch_first=True, norm_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.norm = nn.LayerNorm(d_model)
+
+    def forward(self, x, video_mask):
+        # x: (B, T, C), video_mask: (B, T) bool
+        x = self.pos_encoder(x)
+        x = self.encoder(x, src_key_padding_mask=~video_mask)
+        return self.norm(x)
+
+
+class ISLR_V6(nn.Module):
+    """
+    1) Mỗi frame áp dụng GCN theo KHÔNG GIAN (SpatialGCNBlock) — không TCN
+       trong bước này, xử lý độc lập từng frame.
+    2) Sau khi pool theo node -> (B,T,C), CHIA ĐÔI kênh:
+           nửa 1 -> TCN          (ngắn hạn)
+           nửa 2 -> Transformer  (dài hạn)
+    3) Ghép lại 2 nửa đã học -> pool theo T -> classifier.
+    4) KHÔNG có cross-attention / 2-stream phức tạp như V5 (bỏ tạm phần đó).
+    """
+
+    def __init__(
+        self,
+        gcn_channels=(128, 128, 256, 256),
+        gcn_decouple_p=4,
+        tcn_kernel_size=9,
+        num_transformer_layers=4,
+        nhead=8,
+        dim_feedforward=1024,
+        dropout=0.2,
+        max_seq_len=5000,
+        num_classes=1000,
+    ):
+        super().__init__()
+
+        assert gcn_channels[-1] % 2 == 0, "kênh GCN cuối phải chia hết cho 2 để tách nửa TCN / nửa Transformer"
+
+        self.num_nodes = _NUM_NODE
+        self.register_buffer('adjacency_matrix', build_adjacency())
+
+        # out_ch truyền vào đây hiện KHÔNG có tác dụng thật (xem ghi chú đầu
+        # câu trả lời) — output thật của FusionStem vẫn là _COORD_DIM kênh.
+        self.stem = FusionStem(_COORD_DIM, gcn_channels[0], self.num_nodes)
+
+        ch = [_COORD_DIM, *gcn_channels]   # input đầu tiên của GCN = _COORD_DIM, khớp output thật của stem hiện tại
+        self.gcn_blocks = nn.ModuleList([
+            SpatialGCNBlock(ch[i], ch[i + 1], self.num_nodes, self.adjacency_matrix,
+                             p=gcn_decouple_p, dropout=dropout)
+            for i in range(len(ch) - 1)
+        ])
+
+        gcn_out = gcn_channels[-1]
+        self.half = gcn_out // 2
+
+        self.short_term = ShortTermTCN(self.half, kernel_size=tcn_kernel_size, dropout=dropout)
+        self.long_term = LongTermTransformer(
+            self.half, nhead=nhead, dim_feedforward=dim_feedforward,
+            num_layers=num_transformer_layers, dropout=dropout, max_seq_len=max_seq_len
+        )
+
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(gcn_out),
+            nn.Dropout(dropout),
+            nn.Linear(gcn_out, num_classes),
+        )
+
+    def encode_gcn(self, features):
+        # features: (B, T, 3N, C_in) -> stem gộp 3 nhóm (position/shape/average) -> (B,T,N,_COORD_DIM)
+        x = self.stem(features)
+
+        for block in self.gcn_blocks:
+            x = block(x)                      # (B, T, N, C_out) — chỉ GCN, không TCN
+
+        return x.mean(dim=-2)                 # (B, T, C_out) — pool theo node
+
+    def forward(self, features, labels=None, video_mask=None):
+        if video_mask is None:
+            raise ValueError("video_mask is required")
+        video_mask = video_mask.bool()
+
+        B, T, _ = features.shape
+        x = self.encode_gcn(features.clone().reshape(B, T, self.num_nodes * 3, _COORD_DIM))  # (B,T,gcn_out)
+
+        x_short, x_long = x[..., :self.half], x[..., self.half:]
+
+        x_short = self.short_term(x_short)                 # (B,T,half) — ngắn hạn
+        x_long = self.long_term(x_long, video_mask)          # (B,T,half) — dài hạn
+
+        fused = torch.cat([x_short, x_long], dim=-1)         # (B,T,gcn_out)
+
+        pooled = masked_mean_pool(fused, video_mask)
+        logits = self.classifier(pooled)
 
         loss = None
         if labels is not None:

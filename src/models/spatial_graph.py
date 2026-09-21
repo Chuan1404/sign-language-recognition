@@ -4,6 +4,10 @@ import torch.nn.functional as F
 from config import _N_POSE, _N_HAND, _NUM_NODE, _REMOVE_POSE_IDX
 
 
+_N_POSE = 33
+_N_HAND = 21
+# _REMOVE_POSE_IDX defined elsewhere
+
 _HAND_BONES = [
     (0, 1), (1, 2), (2, 3), (3, 4),
     (0, 5), (5, 6), (6, 7), (7, 8),
@@ -13,68 +17,59 @@ _HAND_BONES = [
     (5, 9), (9, 13), (13, 17),
 ]
 
+# Each undirected edge listed once
 _POSE_BONES = [
-    (0, 1), (0, 2),
-    (1, 0), (1, 2),
-    (2, 1), (2, 3),
-    (3, 1), (3, 7),
-    (4, 0), (4, 5),
-    (5, 4), (5, 6),
-    (6, 5), (6, 8),
-    (7, 3),
-    (8, 6),
+    # face
+    (0, 1), (1, 2), (2, 3), (3, 7),
+    (0, 4), (4, 5), (5, 6), (6, 8),
     (9, 10),
-    (10, 9),
-    (11, 9), (11, 12), (11, 13),
-    (12, 10), (12, 11), (12, 14),
-    (13, 11), (13, 15),
-    (14, 12), (14, 16),
-    (15, 13), (15, 17), (15, 21), (15, 19),
-    (16, 14), (16, 18), (15, 22), (15, 20),
-    (17, 15), (17, 19),
-    (18, 16), (18, 20),
-    (19, 15), (19, 17),
-    (20, 16), (20, 18),
-    (21, 15),
-    (22, 16),
-    (23, 11), (23, 24),
-    (24, 12), (24, 22),
+    # torso / arms
+    (11, 12), (11, 13), (13, 15),
+    (12, 14), (14, 16),
+    (11, 23), (12, 24), (23, 24),
+    # hands (pose-model fingers)
+    (15, 17), (15, 19), (15, 21), (17, 19),
+    (16, 18), (16, 20), (16, 22), (18, 20),
 ]
 
-_LEFT_WRIST = _N_POSE
-_RIGHT_WRIST = _LEFT_WRIST + _N_HAND
-
-_LEFT_HAND_EDGES = [(_LEFT_WRIST + i, _LEFT_WRIST + j) for i, j in _HAND_BONES]
-_RIGHT_HAND_EDGES = [(_RIGHT_WRIST + i, _RIGHT_WRIST + j) for i, j in _HAND_BONES]
-
-CUSTOM_EDGES = [
-    # (9, 11),
-    # (10, 12),
-    (0, 11), (0, 12)
-]
+CUSTOM_EDGES = [(0, 11), (0, 12)]   # nose -> shoulders
 
 remove_set = set(_REMOVE_POSE_IDX)
 
-filtered_bones = [
-    (a, b) for (a, b) in _POSE_BONES
-    if a not in remove_set and b not in remove_set
-]
-
-all_nodes = sorted(set(n for bone in _POSE_BONES for n in bone))
-remaining_nodes = sorted(n for n in all_nodes if n not in remove_set)
-
+# Keep every pose node that isn't removed (not just those appearing in edges)
+remaining_nodes = [n for n in range(_N_POSE) if n not in remove_set]
 old_to_new = {old: new for new, old in enumerate(remaining_nodes)}
+n_pose_kept = len(remaining_nodes)
 
-remapped_bones = [
-    (old_to_new[a], old_to_new[b])
-    for (a, b) in filtered_bones
-]
+def _remap(edges):
+    return [(old_to_new[a], old_to_new[b])
+            for a, b in edges
+            if a in old_to_new and b in old_to_new]
+
+pose_edges   = _remap(_POSE_BONES)
+custom_edges = _remap(CUSTOM_EDGES)
+
+_LEFT_WRIST  = n_pose_kept
+_RIGHT_WRIST = _LEFT_WRIST + _N_HAND
+
+_LEFT_HAND_EDGES  = [(_LEFT_WRIST + i,  _LEFT_WRIST + j)  for i, j in _HAND_BONES]
+_RIGHT_HAND_EDGES = [(_RIGHT_WRIST + i, _RIGHT_WRIST + j) for i, j in _HAND_BONES]
+
+# Optional: link pose wrists to hand-model wrists
+wrist_links = []
+if 15 in old_to_new: wrist_links.append((old_to_new[15], _LEFT_WRIST))
+if 16 in old_to_new: wrist_links.append((old_to_new[16], _RIGHT_WRIST))
 
 FULL_BODY_EDGES = (
-_POSE_BONES + CUSTOM_EDGES
-+ _LEFT_HAND_EDGES
-+ _RIGHT_HAND_EDGES
+    pose_edges + custom_edges
+    + _LEFT_HAND_EDGES + _RIGHT_HAND_EDGES
+    + wrist_links
 )
+
+# Sanity check
+n_nodes = n_pose_kept + 2 * _N_HAND
+assert all(0 <= a < n_nodes and 0 <= b < n_nodes for a, b in FULL_BODY_EDGES)
+assert len({tuple(sorted(e)) for e in FULL_BODY_EDGES}) == len(FULL_BODY_EDGES), "duplicate edges"
 
 
 def build_adjacency_from_edges(edges, num_nodes):
@@ -126,130 +121,121 @@ class TemporalConv(nn.Module):
         x = x.permute(0, 2, 3, 1)  # (B, T, N, C)
         return x
 
-class GraphConv(nn.Module):
+# class GraphConv(nn.Module):
+#
+#     def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, decouple_p=4):
+#         super().__init__()
+#
+#         # asj = normalize_adjacency(base_adjacency)
+#         self.V = num_nodes
+#
+#         # self.register_buffer("adj", base_adjacency)  # (N, N)
+#         self.linear = nn.Linear(in_ch, out_ch)
+#
+#         self.register_buffer("I", torch.eye(self.V))
+#         # self.register_buffer('A', base_adjacency)
+#
+#         self.learnable_A = nn.Parameter(
+#             torch.tensor(base_adjacency, dtype=torch.float32)
+#         )
+#         self.decouple_p = decouple_p
+#
+#     def _raw_A(self):
+#         A = self.I + self.learnable_A
+#         A = 0.5 * (A + A.transpose(-1, -2))  # ép đối xứng
+#         A = F.relu(A)  # ép không âm
+#         return A
+#
+#     def _normalized_A(self, A_raw):
+#         deg = A_raw.sum(-1).clamp(min=1e-6)          # (p, V)
+#         d_inv_sqrt = deg.pow(-0.5)
+#         D_inv_sqrt = torch.diag_embed(d_inv_sqrt)     # (p, V, V)
+#
+#         return D_inv_sqrt @ A_raw @ D_inv_sqrt        # (p, V, V)
+#
+#     def forward(self, x):
+#         x = self.linear(x)
+#
+#         A_raw = self._raw_A()  # (p, V, V)
+#         A_norm = self._normalized_A(A_raw)
+#
+#         out = torch.einsum('vw,btwc->btvc', A_norm, x)
+#
+#         return out, A_raw
+#
+# class GrapConvBlock(nn.Module):
+#     def __init__(self, in_ch, out_ch, num_nodes, base_adjacency):
+#         super().__init__()
+#
+#         self.gcn = GraphConv(
+#             in_ch,
+#             out_ch,
+#             num_nodes,
+#             base_adjacency
+#         )
+#
+#         self.tcn = TemporalConv(
+#             channels=out_ch,
+#             kernel_size=9
+#         )
+#
+#         self.act = nn.GELU()
+#
+#         self.residual = nn.Linear(in_ch, out_ch)
+#         if in_ch != out_ch:
+#             self.residual = nn.Linear(in_ch, out_ch)
+#         else:
+#             self.residual = nn.Identity()
+#
+#     def forward(self, x, mask = None):
+#         residual = self.residual(x)
+#
+#         x, _ = self.gcn(x)
+#         x = self.act(x)
+#
+#         x = self.tcn(x)
+#         x = self.act(x + residual)
+#
+#         if mask is not None:
+#             x = x * mask[:, :, None, None].to(x.dtype)
+#
+#         return x
 
-    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, decouple_p=8):
+class GCNBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, dropout=0.0):
         super().__init__()
+        self.register_buffer("I", torch.eye(num_nodes))
+        self.register_buffer("A", base_adjacency.float())
+        # học phần lệch so với A gốc, khởi tạo bằng 0 -> ổn định hơn
+        self.A_delta = nn.Parameter(torch.zeros(num_nodes, num_nodes))
 
-        # asj = normalize_adjacency(base_adjacency)
-        self.V = num_nodes
+        self.linear = nn.Sequential(nn.Linear(in_ch, out_ch), nn.GELU(), nn.Dropout(dropout), nn.LayerNorm(out_ch))
 
-        # self.register_buffer("adj", base_adjacency)  # (N, N)
-        self.linear = nn.Linear(in_ch, out_ch)
-
-        self.register_buffer("I", torch.eye(self.V))
-        # self.register_buffer('A', base_adjacency)
-
-        self.learnable_A = nn.Parameter(
-            torch.tensor(base_adjacency, dtype=torch.float32)
-        )
-        self.decouple_p = decouple_p
-
-    def _raw_A(self):
-        A = self.I + self.learnable_A
-        A = 0.5 * (A + A.transpose(-1, -2))  # ép đối xứng
-        A = F.relu(A)  # ép không âm
-        return A
-
-    def _normalized_A(self, A_raw):
-        deg = A_raw.sum(-1).clamp(min=1e-6)          # (p, V)
-        d_inv_sqrt = deg.pow(-0.5)
-        D_inv_sqrt = torch.diag_embed(d_inv_sqrt)     # (p, V, V)
-
-        return D_inv_sqrt @ A_raw @ D_inv_sqrt        # (p, V, V)
-
-    def forward(self, x):
-        x = self.linear(x)
-
-        A_raw = self._raw_A()  # (p, V, V)
-        A_norm = self._normalized_A(A_raw)
-
-        out = torch.einsum('vw,btwc->btvc', A_norm, x)
-
-        return out, A_raw
-
-class GrapConvBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency):
-        super().__init__()
-
-        self.gcn = GraphConv(
-            in_ch,
-            out_ch,
-            num_nodes,
-            base_adjacency
-        )
-
-        self.tcn = TemporalConv(
-            channels=out_ch,
-            kernel_size=9
-        )
-
-        self.act = nn.GELU()
-
-        self.residual = nn.Linear(in_ch, out_ch)
-        if in_ch != out_ch:
-            self.residual = nn.Linear(in_ch, out_ch)
-        else:
-            self.residual = nn.Identity()
-
-    def forward(self, x, mask = None):
-        residual = self.residual(x)
-
-        x, _ = self.gcn(x)
-        x = self.act(x)
-
-        x = self.tcn(x)
-        x = self.act(x + residual)
-
-        if mask is not None:
-            x = x * mask[:, :, None, None].to(x.dtype)
-
-        return x
-
-class GCN_Block(nn.Module):
-    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency):
-        super().__init__()
-
-        self.num_nodes = num_nodes
-
-        self.register_buffer("adj", base_adjacency)  # (N, N)
-        self.linear = nn.Linear(in_ch, out_ch)
-
-        self.register_buffer("I", torch.eye(self.num_nodes))
-        self.register_buffer('A', base_adjacency)
-
-        self.learnable_A = nn.Parameter(
-            torch.tensor(base_adjacency, dtype=torch.float32)
-        )
-
-        self.act = nn.GELU()
         self.tcn = TemporalConv(out_ch)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
         self.residual = nn.Identity() if in_ch == out_ch else nn.Linear(in_ch, out_ch)
 
-    def _raw_A(self):
-        return  self.I + self.learnable_A
+    def _normalized_A(self):
+        A = F.relu(self.A + self.A_delta) + self.I
+        d = A.sum(-1).clamp(min=1e-6).pow(-0.5)
+        return d[:, None] * A * d[None, :]
 
-    def _normalized_A(self, A_raw):
-        deg = A_raw.sum(-1).clamp(min=1e-6)
-        d_inv_sqrt = deg.pow(-0.5)
-        D_inv_sqrt = torch.diag_embed(d_inv_sqrt)
+    def forward(self, features, mask=None):
+        m = None if mask is None else mask[:, :, None, None].to(features.dtype)
 
-        return D_inv_sqrt @ A_raw @ D_inv_sqrt
+        res = self.residual(features)
+        x = self.linear(features)
 
-    def forward(self, x, mask = None):
-        res = self.residual(x)
-        x = self.linear(x)
-
-        A_raw = self._raw_A()
-        A_norm = self._normalized_A(A_raw)
-
-        x = torch.einsum('vw,btwc->btvc', A_norm, x)
+        x = torch.einsum('vw,btwc->btvc', self._normalized_A(), x)
         x = self.act(x)
 
-        x = self.tcn(x) + res
-        x = self.act(x)
+        if m is not None:
+            x = x * m
+        x = self.tcn(x)
+        x = self.drop(x)
 
-        if mask is not None:
-            x = x * mask[:, :, None, None].to(x.dtype)
-
+        x = x + res
+        if m is not None:
+            x = x * m
         return x

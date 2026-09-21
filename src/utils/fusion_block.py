@@ -64,87 +64,6 @@ class FusionComponent:
         return fused_flat
 
     def fuse_follow_position(self, pose_feature, left_feature, right_feature):
-
-        T = pose_feature.shape[0]
-
-        pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
-        left = left_feature.reshape(T, 21, _COORD_DIM).copy()
-        right = right_feature.reshape(T, 21, _COORD_DIM).copy()
-
-        left_present_mask = ~np.all(left == 0, axis=-1)  # (T, 21)
-        right_present_mask = ~np.all(right == 0, axis=-1)  # (T, 21)
-        pose_present_mask = ~np.all(pose == 0, axis=-1)  # (T, 33)
-
-        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
-        scale = np.where(scale > _EPS, scale, 1.0)
-        scale = scale[:, np.newaxis, :]
-
-        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
-
-        left_wrist_present = left_present_mask[:, 0]
-        right_wrist_present = right_present_mask[:, 0]
-
-        left_wrist = left[:, 0:1, :]
-        right_wrist = right[:, 0:1, :]
-
-        hand_root = (left_wrist + right_wrist) / 2
-        hand_root = np.where(
-            (left_wrist_present & ~right_wrist_present)[:, None, None], left_wrist, hand_root
-        )  # chỉ trái present -> lấy cổ tay trái
-        hand_root = np.where(
-            (right_wrist_present & ~left_wrist_present)[:, None, None], right_wrist, hand_root
-        )  # chỉ phải present -> lấy cổ tay phải
-        # Cả 2 cổ tay đều thiếu -> hand_root = (0+0)/2 = 0, giữ nguyên vì không có
-        # gốc nào tốt hơn để chọn — không phải bug, chỉ là fallback trung tính.
-
-        pose = (pose - pose_root) / scale
-        left = (left - hand_root) / scale
-        right = (right - hand_root) / scale
-
-        left = left * left_present_mask[..., None]
-        right = right * right_present_mask[..., None]
-        pose = pose * pose_present_mask[..., None]
-
-        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
-
-        fused_coords = np.concatenate([pose, left, right], axis=1)
-        fused_flat = fused_coords.reshape(T, -1)
-
-        return fused_flat
-
-    # def fuse_follow_position(self, pose_feature, left_feature, right_feature):
-    #     T = pose_feature.shape[0]
-    #
-    #     pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
-    #     left = left_feature.reshape(T, 21, _COORD_DIM).copy()
-    #     right = right_feature.reshape(T, 21, _COORD_DIM).copy()
-    #
-    #     left_present_mask = ~np.all(left == 0, axis=-1)
-    #     right_present_mask = ~np.all(right == 0, axis=-1)
-    #     pose_present_mask = ~np.all(pose == 0, axis=-1)
-    #
-    #     scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
-    #     scale = np.where(scale > _EPS, scale, 1.0)
-    #     scale = scale[:, np.newaxis, :]
-    #
-    #     root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
-    #
-    #     pose = (pose - root) / scale
-    #     left = (left - root) / scale
-    #     right = (right - root) / scale
-    #
-    #     left = left * left_present_mask[..., None]
-    #     right = right * right_present_mask[..., None]
-    #     pose = pose * pose_present_mask[..., None]
-    #
-    #     pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
-    #
-    #     fused_coords = np.concatenate([pose, left, right], axis=1)
-    #     fused_flat = fused_coords.reshape(T, -1)  # (T, D)
-    #
-    #     return fused_flat
-
-    def fuse_follow_velocity(self, pose_feature, left_feature, right_feature):
         T = pose_feature.shape[0]
 
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
@@ -155,38 +74,57 @@ class FusionComponent:
         right_present_mask = ~np.all(right == 0, axis=-1)
         pose_present_mask = ~np.all(pose == 0, axis=-1)
 
-        def compute_velocity(coords, present_mask):
-            T = coords.shape[0]
+        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
+        scale = np.where(scale > _EPS, scale, 1.0)
+        scale = scale[:, np.newaxis, :]
 
-            vel = np.zeros_like(coords, dtype=np.float32)
-            for i in range(1, T):
-                vel[i] = coords[i] - coords[i - 1]
+        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
+        left_root = left[:, 0:1, :]
+        right_root = right[:, 0:1, :]
 
-            pair_present = present_mask.copy()
+        root = (pose_root + left_root + right_root) / 3
 
-            pair_present[1:] &= present_mask[:-1]
-            pair_present[0] = False
+        pose = (pose - root) / scale
+        left = (left - root) / scale
+        right = (right - root) / scale
 
-            vel *= pair_present[..., None].astype(np.float32)
+        left = left * left_present_mask[..., None]
+        right = right * right_present_mask[..., None]
+        pose = pose * pose_present_mask[..., None]
 
-            return vel
+        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
 
-        pose_vel = compute_velocity(pose, pose_present_mask)
-        left_vel = compute_velocity(left, left_present_mask)
-        right_vel = compute_velocity(right, right_present_mask)
-
-        pose_vel = np.delete(pose_vel, _REMOVE_POSE_IDX, axis=1)
-
-        # Fuse
-        fused_vel = np.concatenate([pose_vel, left_vel, right_vel], axis=1)
-
-        velocity_scale = 1.0
-        fused_vel = fused_vel / velocity_scale
-        fused_vel = np.clip(fused_vel, 0.0, 1.0)
-
-        fused_flat = fused_vel.reshape(T, -1)
+        fused_coords = np.concatenate([pose, left, right], axis=1)
+        fused_flat = fused_coords.reshape(T, -1)  # (T, D)
 
         return fused_flat
+
+    def fuse_follow_velocity(self, pose_feature, left_feature, right_feature):
+        T = pose_feature.shape[0]
+
+        pose = pose_feature.reshape(T, 33, _COORD_DIM)
+        left = left_feature.reshape(T, 21, _COORD_DIM)
+        right = right_feature.reshape(T, 21, _COORD_DIM)
+
+        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
+        p = np.concatenate([pose, left, right], axis=1).astype(np.float32)  # (T, N, C)
+
+        # mặt nạ: node có mặt (không phải toàn 0)
+        mask = ~np.all(p == 0, axis=-1)  # (T, N)
+        m = mask[..., None]  # (T, N, 1)
+
+        # vận tốc: frame trước - frame sau
+        v = np.zeros_like(p)
+        v[:-1] = (p[:-1] - p[1:]) * (m[:-1] & m[1:])
+
+        # # gia tốc: vận tốc trước - vận tốc sau
+        # a = np.zeros_like(p)
+        # a[:-1] = (v[:-1] - v[1:]) * (m[:-1] & m[1:])
+
+        # features = np.concatenate([v, a], axis=-1).astype(np.float32)  # (T, N, 3*C)
+        v = v.reshape(T, -1)
+
+        return v
 
     def fuse_follow_shape(self, pose_feature, left_feature, right_feature):
 

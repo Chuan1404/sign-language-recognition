@@ -1,12 +1,14 @@
 import os
 
+from models import ISLR_V5
+
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 from torch.utils.data import DataLoader
 from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.data.augmentation import AugmentedSkeletonDataset, SkeletonAugmentor
-from src.models.SLT_model import ISLR_V2, ISLR_V1, ISLR_V3, ISLR_V4
+from src.models.SLT_model import ISLR_V2, ISLR_V3, ISLR_V4
 from src.utils import FusionComponent
 from src.training.train import collate_fn, train_one_epoch, validate
 
@@ -16,11 +18,11 @@ from config import ROOT, DEVICE
 import json
 
 
-DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features")
+DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR    = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = f"contest_100_v4.pt"
+MODEL_NAME = f"contest_100_v3.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
@@ -51,10 +53,9 @@ def main(args):
 
     feature, _ = base_train[0]
 
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    train_dataset = base_train
+    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    # train_dataset = base_train
     val_dataset = base_val
-
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True,
         collate_fn=collate_fn,
@@ -74,7 +75,7 @@ def main(args):
         num_classes=num_classes,
     )
 
-    model = ISLR_V3(**model_kwargs).to(DEVICE)
+    model = ISLR_V5(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")

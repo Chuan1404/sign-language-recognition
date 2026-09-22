@@ -132,7 +132,7 @@ class SelfPacingDroppingBlock(nn.Module):
         super().__init__()
 
         self.gcn = DecoupledGCN(in_ch, out_ch, num_nodes, base_adjacency, decouple_p)
-        self.tcn = SimpleTCN(out_ch)
+        self.tcn = SimpleTCN(out_ch, kernel_size=1)
 
     def forward(self, x, mask):
         m = None if mask is None else mask[:, :, None, None].to(x.dtype)
@@ -439,7 +439,7 @@ class ISLR_V5(nn.Module):
 
         self.stem = FusionStem(channels[0], channels[1], self.num_nodes)
         self.gcn_block = nn.ModuleList([
-            GCNBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix)
+            SelfPacingDroppingBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix)
             for i in range(len(channels) - 1)])
         # self.gcn_proj = nn.Sequential(nn.Linear(channels[-1], d_model), nn.LayerNorm(d_model))
 
@@ -497,10 +497,9 @@ class ISLR_V5(nn.Module):
         # x = x_shape + x_average                           # best=73.00% loss=1.1507 75.00%
         # x = x_shape + x_average + x_gcn                   # best=71.00% loss=1.1686 74.00
 
-        # x = x_shape + x_average + x_position              # best=75.00% loss=1.0840 77.00%
+        x = x_shape + x_average + x_position              # best=75.00% loss=1.0840 77.00%
         # x = x_shape + x_average + x_position + x_gcn      # best=71.00% loss=1.1394 78.00%
-        x = x_gcn                                           # best=36.00% loss=2.4907 37.00%
-
+        # x = x_gcn                                           # best=62.00% loss=1.4346 66.00%
         x = self.pos_encoder(x)
         x = self.encoder(x, src_key_padding_mask=~video_mask)
         return self.encoder_norm(x)  # (B, T, d_model)

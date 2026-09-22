@@ -126,12 +126,11 @@ class GCNBlock(nn.Module):
         super().__init__()
         self.register_buffer("I", torch.eye(num_nodes))
         self.register_buffer("A", base_adjacency.float())
-        # học phần lệch so với A gốc, khởi tạo bằng 0 -> ổn định hơn
         self.A_delta = nn.Parameter(torch.zeros(num_nodes, num_nodes))
 
         self.linear = nn.Sequential(nn.Linear(in_ch, out_ch), nn.GELU(), nn.Dropout(dropout), nn.LayerNorm(out_ch))
 
-        self.tcn = TemporalConv(out_ch)
+        self.tcn = TemporalConv(out_ch, kernel_size=1)
         self.act = nn.GELU()
         self.drop = nn.Dropout(dropout)
         self.residual = nn.Identity() if in_ch == out_ch else nn.Linear(in_ch, out_ch)

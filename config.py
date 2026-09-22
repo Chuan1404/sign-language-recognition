@@ -23,7 +23,7 @@ WLASL_RAW_DATA = os.path.join(ROOT, "datasets/raw/WLASL/videos")
 
 # _REMOVE_POSE_IDX = [3, 4, 5, 6, 7, 8, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
 # _REMOVE_POSE_IDX = [1, 3, 4, 6, 7, 8, 9, 10, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32] #2
-_REMOVE_POSE_IDX = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32] #3
+_REMOVE_POSE_IDX = [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32] #3
 _N_POSE = 33 - len(_REMOVE_POSE_IDX)
 _N_HAND = 21
 _NUM_NODE = int(_N_POSE + _N_HAND * 2)

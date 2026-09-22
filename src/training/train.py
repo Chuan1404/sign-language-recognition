@@ -3,10 +3,11 @@ from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 
 def collate_fn(batch):
-    features, labels = [], []
-    for feature, label in batch:
+    features, labels, video_ids = [], [], []
+    for feature, label, video_id in batch:
         features.append(torch.as_tensor(feature, dtype=torch.float32))
         labels.append(label)
+        video_ids.append(video_id)
 
     real_lengths = [f.shape[0] for f in features]
 
@@ -19,7 +20,27 @@ def collate_fn(batch):
 
     labels = torch.tensor(labels, dtype=torch.long)
 
-    return features, labels, video_mask
+    return features, labels, video_mask, video_ids
+
+def collate_fn_multimodal(batch):
+    features, images, labels, video_ids = [], [], [], []
+    for feature, image, label, video_id in batch:
+        features.append(torch.as_tensor(feature, dtype=torch.float32))
+        images.append(image) # tensor (5, 3, 224, 224)
+        labels.append(label)
+        video_ids.append(video_id)
+
+    real_lengths = [f.shape[0] for f in features]
+    features = pad_sequence(features, batch_first=True)
+    images = torch.stack(images, dim=0) # (B, 5, 3, 224, 224)
+
+    video_mask = (
+        torch.arange(features.shape[1]).unsqueeze(0)
+        < torch.tensor(real_lengths).unsqueeze(1)
+    ).long()
+
+    labels = torch.tensor(labels, dtype=torch.long)
+    return features, images, labels, video_mask, video_ids
 
 def train_one_epoch(model, loader, optimizer, device='cuda'):
 
@@ -28,7 +49,7 @@ def train_one_epoch(model, loader, optimizer, device='cuda'):
 
     pbar = tqdm(loader, desc="Training")
 
-    for features, labels, video_mask in pbar:
+    for features, labels, video_mask, video_ids in pbar:
 
         features   = features.to(device, non_blocking=True)
         labels     = labels.to(device, non_blocking=True)
@@ -63,7 +84,7 @@ def validate(model, loader, top_k=5, device='cuda'):
     total_samples = 0
 
     with torch.no_grad():
-        for features, labels, video_mask in loader:
+        for features, labels, video_mask, video_ids in loader:
             features   = features.to(device, non_blocking=True)
             labels     = labels.to(device, non_blocking=True)
             video_mask = video_mask.to(device, non_blocking=True)
@@ -107,7 +128,7 @@ def test(model, loader, idx2gloss, top_k=5, device='cuda'):
     wrong_predictions = Counter()
 
     with torch.no_grad():
-        for features, labels, video_mask in loader:
+        for features, labels, video_mask, video_ids in loader:
 
             features = features.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)

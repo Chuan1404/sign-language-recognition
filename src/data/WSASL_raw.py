@@ -39,7 +39,7 @@ class WLASLLandmarksDataset(Dataset):
             if (os.path.exists(left_hand_path) and os.path.exists(right_hand_path) and os.path.exists(
                     pose_path) and os.path.exists(text_path)):
                 self.samples.append(
-                    {"left_hand_path": left_hand_path, "right_hand_path": right_hand_path, "pose_path": pose_path,
+                    {"video_name": video_name, "left_hand_path": left_hand_path, "right_hand_path": right_hand_path, "pose_path": pose_path,
                      "text_path": text_path, })
 
     def __len__(self):
@@ -52,6 +52,7 @@ class WLASLLandmarksDataset(Dataset):
         left_features = np.load(item["left_hand_path"])
         right_features = np.load(item["right_hand_path"])
         pose_features = np.load(item["pose_path"])
+        video_id = item["video_name"]
 
         T = left_features.shape[0]
 
@@ -68,4 +69,4 @@ class WLASLLandmarksDataset(Dataset):
         average_feature = self.fusion_component.fuse(pose_features, left_features, right_features)
 
         features = np.concatenate([position_features, shape_features, average_feature], axis=-1)
-        return features, label_id
+        return features, label_id, video_id

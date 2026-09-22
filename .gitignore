@@ -3,3 +3,4 @@ datasets/
 .idea
 __pycache__
 *.pt
+outputs/

@@ -70,34 +70,22 @@ class FusionComponent:
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
-        # --------------------------------------------------
-        # 1. Landmark presence masks
-        # --------------------------------------------------
         pose_present_mask = ~np.all(pose == 0, axis=-1)  # [T, 33]
         left_present_mask = ~np.all(left == 0, axis=-1)  # [T, 21]
         right_present_mask = ~np.all(right == 0, axis=-1)  # [T, 21]
 
-        # --------------------------------------------------
-        # 2. Shoulder-based scale
-        # --------------------------------------------------
         scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1,
             keepdims=True)  # [T, 1]
 
         scale = np.where(scale > _EPS, scale, 1.0)
         scale = scale[:, np.newaxis, :]  # [T, 1, 1]
 
-        # --------------------------------------------------
-        # 3. Root points
-        # --------------------------------------------------
-        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[
-            :, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2  # [T, 1, 3]
+        # pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2  # [T, 1, 3]
+        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
 
         left_root = left[:, 0:1, :]  # [T, 1, 3]
         right_root = right[:, 0:1, :]  # [T, 1, 3]
 
-        # --------------------------------------------------
-        # 4. Root presence masks
-        # --------------------------------------------------
         pose_root_present = (pose_present_mask[:, _LEFT_SHOULDER_IDX] & pose_present_mask[:, _RIGHT_SHOULDER_IDX])[
             :, None, None]  # [T, 1, 1]
 
@@ -188,8 +176,8 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
 
         scale = scale[:, np.newaxis, :]
-        # pose_root = pose[:, np.newaxis, _NOSE_IDX]
-        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
+        pose_root = pose[:, np.newaxis, _NOSE_IDX]
+        # pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
         left_root = left[:, 0:1, :]
         right_root = right[:, 0:1, :]
 
@@ -202,9 +190,7 @@ class FusionComponent:
         pose = pose * pose_present_mask[..., None]
 
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
-
         fused_coords = np.concatenate([pose, left, right], axis=1)
-
         fused_flat = fused_coords.reshape(T, -1)  # (T, D)
 
         return fused_flat

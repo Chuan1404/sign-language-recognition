@@ -51,7 +51,6 @@ class WLASLLandmarksDataset(Dataset):
         left_features = np.load(item["left_hand_path"])
         right_features = np.load(item["right_hand_path"])
         pose_features = np.load(item["pose_path"])
-        video_id = item["video_name"]
 
         T = left_features.shape[0]
 
@@ -68,4 +67,4 @@ class WLASLLandmarksDataset(Dataset):
         average_feature = self.fusion_component.fuse(pose_features, left_features, right_features)
 
         features = np.concatenate([position_features, shape_features, average_feature], axis=-1)
-        return features, label_id, video_id
+        return features, label_id

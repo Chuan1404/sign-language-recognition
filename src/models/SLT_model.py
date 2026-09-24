@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from config import _NUM_NODE, _COORD_DIM
+from config import _NUM_NODE, _COORD_DIM, _N_POSE, _N_HAND
 from src.models.positional_encoding import PositionalEncoding
 from src.models.spatial_graph import build_adjacency, GCNBlock, SelfPacingDroppingBlock
 
@@ -78,16 +78,13 @@ class ISLR_Transformer(nn.Module):
         d_model = hidden_dim
         self.num_nodes = _NUM_NODE
 
-        self.shape_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
+        self.pose_projection = nn.Sequential(nn.Linear(_N_POSE * _COORD_DIM, d_model), nn.GELU(), nn.Dropout(dropout),
                                               nn.LayerNorm(d_model))
 
-        self.position_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
+        self.hand_projection = nn.Sequential(nn.Linear(_N_HAND * _COORD_DIM * 2, d_model), nn.GELU(), nn.Dropout(dropout),
                                                  nn.LayerNorm(d_model))
 
-        self.average_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
-                                                nn.LayerNorm(d_model))
-
-        self.velocity_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
+        self.cross_projection = nn.Sequential(nn.Linear(d_model * 2, d_model), nn.GELU(), nn.Dropout(dropout),
                                                  nn.LayerNorm(d_model))
 
         self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
@@ -107,20 +104,16 @@ class ISLR_Transformer(nn.Module):
         B, T, _ = features.shape
 
         video_mask = video_mask.bool()
-        position_features = features[:, :, :self.num_nodes * 2]
-        shape_features = features[:, :, self.num_nodes * 2:self.num_nodes * 4]
-        average_features = features[:, :, self.num_nodes * 4:self.num_nodes * 6]
+        features = features[:, :, self.num_nodes * 2:self.num_nodes * 4]
 
-        # position_features = (vel_features * position_features).reshape(B, T, self.num_nodes * 2)
-        # shape_features = (vel_features * shape_features).reshape(B, T, self.num_nodes * 2)
+        pose_features = features[:, :, :_N_POSE * _COORD_DIM]
+        hand_features = features[:, :, _N_POSE * _COORD_DIM:]
 
-        x_position = self.position_projection(position_features)
-        x_shape = self.shape_projection(shape_features)
-        x_average = self.average_projection(average_features)
-        # x_velocity = self.velocity_projection(velocity_features)
+        x_pose = self.pose_projection(pose_features)
+        x_hand = self.hand_projection(hand_features)
 
-        x = x_position + x_shape + x_average
-
+        # x = self.cross_projection(torch.concatenate([x_pose, x_hand], dim=-1))
+        x = x_pose + x_hand
         x = self.pos_encoder(x)  # (B, T, d_model)
         x = self.encoder(x, src_key_padding_mask=~video_mask  # True = ignore (padding)
                          )  # (B, T, d_model)

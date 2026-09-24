@@ -1,5 +1,7 @@
 import os
 
+from models import ISLR_Transformer_GCN
+
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -73,7 +75,7 @@ def main(args):
         num_classes=num_classes,
     )
 
-    model = ISLR_Transformer(**model_kwargs).to(DEVICE)
+    model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")

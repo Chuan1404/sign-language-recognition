@@ -79,13 +79,13 @@ class ISLR_Transformer(nn.Module):
         self.num_nodes = _NUM_NODE
 
         self.pose_projection = nn.Sequential(nn.Linear(_N_POSE * _COORD_DIM, d_model), nn.GELU(), nn.Dropout(dropout),
-                                              nn.LayerNorm(d_model))
+                                             nn.LayerNorm(d_model))
 
-        self.hand_projection = nn.Sequential(nn.Linear(_N_HAND * _COORD_DIM * 2, d_model), nn.GELU(), nn.Dropout(dropout),
-                                                 nn.LayerNorm(d_model))
+        self.hand_projection = nn.Sequential(nn.Linear(_N_HAND * _COORD_DIM * 2, d_model), nn.GELU(),
+                                             nn.Dropout(dropout), nn.LayerNorm(d_model))
 
         self.cross_projection = nn.Sequential(nn.Linear(d_model * 2, d_model), nn.GELU(), nn.Dropout(dropout),
-                                                 nn.LayerNorm(d_model))
+                                              nn.LayerNorm(d_model))
 
         self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
 
@@ -161,28 +161,23 @@ class CrossAttentionLayer(nn.Module):
 
 
 class ISLR_Transformer_GCN(nn.Module):
-    def __init__(self, gcn_channels=(64, 64, 64, 64), d_model=256, num_encoder_layers=6, nhead=8,
+    def __init__(self, gcn_channels=(128, 128, 256, 256), d_model=256, num_encoder_layers=6, nhead=8,
                  dim_feedforward=256 * 8, dropout=0.2, max_seq_len=5000, num_classes=1000):
         super().__init__()
         self.num_nodes = _NUM_NODE
 
-        # ---------------- Stream 1: GCN (V3) ----------------
         self.register_buffer('adjacency_matrix', build_adjacency())
         channels = [_COORD_DIM, *gcn_channels]
 
-        self.stem = FusionStem(channels[0], channels[1], self.num_nodes)
-        self.gcn_block = nn.ModuleList(
-            [SelfPacingDroppingBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in
-             range(len(channels) - 1)])
-        # self.gcn_proj = nn.Sequential(nn.Linear(channels[-1], d_model), nn.LayerNorm(d_model))
+        self.pose_projection = nn.Sequential(nn.Linear(_N_POSE * _COORD_DIM, d_model), nn.GELU(), nn.Dropout(dropout),
+                                             nn.LayerNorm(d_model))
 
-        # ---------------- Stream 2: Transformer (V4) ----------------
-        self.shape_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
-                                              nn.LayerNorm(d_model))
-        self.position_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
-                                                 nn.LayerNorm(d_model))
-        self.average_projection = nn.Sequential(nn.Linear(self.num_nodes * 2, d_model), nn.GELU(), nn.Dropout(dropout),
-                                                nn.LayerNorm(d_model))
+        self.hand_projection = nn.Sequential(nn.Linear(_N_HAND * _COORD_DIM * 2, d_model), nn.GELU(),
+                                             nn.Dropout(dropout), nn.LayerNorm(d_model))
+        self.gcn_block = nn.ModuleList(
+            [SelfPacingDroppingBlock(channels[i], channels[i + 1], _N_HAND * 2, self.adjacency_matrix) for i in
+             range(len(channels) - 1)])
+
         self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
@@ -190,32 +185,26 @@ class ISLR_Transformer_GCN(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
         self.encoder_norm = nn.LayerNorm(d_model)
 
-        # ---------------- Cross-attention fusion ----------------
-        # gcn <- transformer  và  transformer <- gcn
-        self.norm_g = nn.LayerNorm(d_model)
-
-        # ---------------- Classifier ----------------
         self.classifier = nn.Sequential(nn.LayerNorm(d_model), nn.Dropout(dropout), nn.Linear(d_model, num_classes), )
 
-    # ---- stream 1 ----
     def encode_gcn(self, features, video_mask):
-        features = self.stem(features)
 
         for block in self.gcn_block:
             features = block(features, video_mask)
 
         features = features.mean(dim=-2)  # (B, T, gcn_out)
         # return self.gcn_proj(x)  # (B, T, d_model)
-        return self.norm_g(features)
+        return features
 
-    # ---- stream 2 ----
     def encode_transformer(self, features, video_mask):
         B, T, _ = features.shape
 
-        x_position = self.position_projection(features[:, :, :self.num_nodes * 2])
-        x_shape = self.shape_projection(features[:, :, self.num_nodes * 2:self.num_nodes * 4])
-        x_average = self.average_projection(features[:, :, self.num_nodes * 4:self.num_nodes * 6])
-        x_gcn = self.encode_gcn(features.clone().reshape(B, T, self.num_nodes * 3, _COORD_DIM), video_mask)
+        pose_features = features[:, :, :_N_POSE * _COORD_DIM]
+        hand_features = features[:, :, _N_POSE * _COORD_DIM:]
+
+        x_gcn = self.encode_gcn(features[:, :, _N_POSE * _COORD_DIM:].clone().reshape(B, T, _N_HAND * 2, _COORD_DIM),  video_mask)
+        x_pose = self.pose_projection(pose_features)
+        x_hand = self.hand_projection(hand_features)
 
         # x = x_average                                     # best=73.00% loss=1.2133 75.00%
         # x = x_average + x_gcn                             # best=66.00% loss=1.4254 95.00%
@@ -229,9 +218,11 @@ class ISLR_Transformer_GCN(nn.Module):
         # x = x_shape + x_average                           # best=73.00% loss=1.1507 75.00%
         # x = x_shape + x_average + x_gcn                   # best=71.00% loss=1.1686 74.00
 
-        x = x_shape + x_average + x_position  # best=75.00% loss=1.0840 77.00%
+        # x = x_shape + x_average + x_position  # best=75.00% loss=1.0840 77.00%
         # x = x_shape + x_average + x_position + x_gcn      # best=71.00% loss=1.1394 78.00%
         # x = x_gcn                                           # best=62.00% loss=1.4346 66.00%
+
+        x = x_pose + x_hand + x_gcn
         x = self.pos_encoder(x)
         x = self.encoder(x, src_key_padding_mask=~video_mask)
         return self.encoder_norm(x)  # (B, T, d_model)
@@ -242,6 +233,7 @@ class ISLR_Transformer_GCN(nn.Module):
         video_mask = video_mask.bool()
 
         B, T, _ = features.shape
+        features = features[:, :, self.num_nodes * 2:self.num_nodes * 4]
 
         t = self.encode_transformer(features, video_mask)
 

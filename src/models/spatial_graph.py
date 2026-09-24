@@ -29,7 +29,7 @@ def _remap(edges):
 pose_edges = _remap(_POSE_BONES)
 custom_edges = _remap(CUSTOM_EDGES)
 
-_LEFT_WRIST = n_pose_kept
+_LEFT_WRIST = 0
 _RIGHT_WRIST = _LEFT_WRIST + _N_HAND
 
 _LEFT_HAND_EDGES = [(_LEFT_WRIST + i, _LEFT_WRIST + j) for i, j in _HAND_BONES]
@@ -40,7 +40,7 @@ wrist_links = []
 if 15 in old_to_new: wrist_links.append((old_to_new[15], _LEFT_WRIST))
 if 16 in old_to_new: wrist_links.append((old_to_new[16], _RIGHT_WRIST))
 
-FULL_BODY_EDGES = (pose_edges + custom_edges + _LEFT_HAND_EDGES + _RIGHT_HAND_EDGES + wrist_links)
+FULL_BODY_EDGES = (_LEFT_HAND_EDGES + _RIGHT_HAND_EDGES + wrist_links)
 
 # Sanity check
 n_nodes = n_pose_kept + 2 * _N_HAND
@@ -57,7 +57,7 @@ def build_adjacency_from_edges(edges, num_nodes):
 
 
 def build_adjacency():
-    return build_adjacency_from_edges(FULL_BODY_EDGES, _NUM_NODE)
+    return build_adjacency_from_edges(FULL_BODY_EDGES, _N_HAND * 2)
 
 
 def _normalize_adjacency(A):

@@ -1,9 +1,12 @@
 import torch
 import torch.nn as nn
+from torchvision.models.video.resnet import BasicBlock
 
 from config import _NUM_NODE, _COORD_DIM, _N_POSE, _N_HAND
 from src.models.positional_encoding import PositionalEncoding
 from src.models.spatial_graph import build_adjacency, GCNBlock, SelfPacingDroppingBlock
+import torchvision.models as models
+import torch.nn.functional as F
 
 
 def masked_mean_pool(x, video_mask):
@@ -11,25 +14,6 @@ def masked_mean_pool(x, video_mask):
     summed = (x * mask).sum(dim=1)  # (B, D)
     counts = mask.sum(dim=1).clamp(min=1.0)  # (B, 1) — avoid /0
     return summed / counts
-
-
-class FusionStem(nn.Module):
-    def __init__(self, in_ch, out_ch, num_nodes, dropout=0.1):
-        super().__init__()
-        self.N = num_nodes
-
-        def branch():
-            return nn.Sequential(nn.Linear(in_ch, out_ch), nn.GELU(), nn.Dropout(dropout), nn.LayerNorm(out_ch))
-
-        self.pos, self.shp, self.avg = branch(), branch(), branch()
-
-    def forward(self, x):  # (B, T, 3N, C_in)
-        N = self.N
-        # return (self.pos(x[:, :, :N])
-        #         + self.shp(x[:, :, N:2*N])
-        #         + self.avg(x[:, :, 2*N:3*N]))
-
-        return self.pos(x[:, :, N:2 * N])
 
 
 class ISLR_GCN(nn.Module):
@@ -71,8 +55,8 @@ class ISLR_GCN(nn.Module):
 
 
 class ISLR_Transformer(nn.Module):
-    def __init__(self, input_dim=_NUM_NODE * _COORD_DIM, hidden_dim=256, num_encoder_layers=6, nhead=8,
-                 dim_feedforward=256 * 8, dropout=0.2, max_seq_len=5000, num_classes=1000):
+    def __init__(self, hidden_dim=256, num_encoder_layers=6, nhead=8, dim_feedforward=256 * 8, dropout=0.2,
+                 max_seq_len=5000, num_classes=1000):
         super().__init__()
 
         d_model = hidden_dim
@@ -83,9 +67,6 @@ class ISLR_Transformer(nn.Module):
 
         self.hand_projection = nn.Sequential(nn.Linear(_N_HAND * _COORD_DIM * 2, d_model), nn.GELU(),
                                              nn.Dropout(dropout), nn.LayerNorm(d_model))
-
-        self.cross_projection = nn.Sequential(nn.Linear(d_model * 2, d_model), nn.GELU(), nn.Dropout(dropout),
-                                              nn.LayerNorm(d_model))
 
         self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
 
@@ -104,7 +85,6 @@ class ISLR_Transformer(nn.Module):
         B, T, _ = features.shape
 
         video_mask = video_mask.bool()
-        features = features[:, :, self.num_nodes * 2:self.num_nodes * 4]
 
         pose_features = features[:, :, :_N_POSE * _COORD_DIM]
         hand_features = features[:, :, _N_POSE * _COORD_DIM:]
@@ -112,7 +92,6 @@ class ISLR_Transformer(nn.Module):
         x_pose = self.pose_projection(pose_features)
         x_hand = self.hand_projection(hand_features)
 
-        # x = self.cross_projection(torch.concatenate([x_pose, x_hand], dim=-1))
         x = x_pose + x_hand
         x = self.pos_encoder(x)  # (B, T, d_model)
         x = self.encoder(x, src_key_padding_mask=~video_mask  # True = ignore (padding)
@@ -133,6 +112,76 @@ class ISLR_Transformer(nn.Module):
             loss = F.cross_entropy(logits, labels)
 
         return logits, loss
+
+
+class ISLR_Transformer_Selector(nn.Module):
+    def __init__(self, input_dim=_NUM_NODE * _COORD_DIM, hidden_dim=256, num_encoder_layers=6, nhead=8,
+                 dim_feedforward=256 * 8, dropout=0.2, max_seq_len=5000, num_classes=1000):
+        super().__init__()
+
+        d_model = hidden_dim
+        self.num_nodes = _NUM_NODE
+
+        self.pose_projection = nn.Sequential(nn.Linear(_N_POSE * _COORD_DIM, d_model), nn.GELU(), nn.Dropout(dropout),
+                                             nn.LayerNorm(d_model))
+
+        self.hand_projection = nn.Sequential(nn.Linear(_N_HAND * _COORD_DIM * 2, d_model), nn.GELU(),
+                                             nn.Dropout(dropout), nn.LayerNorm(d_model))
+
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
+                                                   dropout=dropout, batch_first=True, norm_first=True)
+
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+        self.encoder_norm = nn.LayerNorm(d_model)
+
+        self.classifier = nn.Linear(d_model, num_classes)
+
+        self.frame_importance_head = nn.Sequential(nn.Linear(d_model, d_model // 2), nn.GELU(), nn.Dropout(dropout),
+                                                   nn.Linear(d_model // 2, 1))
+
+    def encode(self, features, video_mask):
+        if video_mask is None:
+            raise ValueError("video_mask is required")
+
+        video_mask = video_mask.bool()
+
+        pose_features = features[:, :, :_N_POSE * _COORD_DIM]
+        hand_features = features[:, :, _N_POSE * _COORD_DIM:]
+
+        x_pose = self.pose_projection(pose_features)
+        x_hand = self.hand_projection(hand_features)
+        x = x_pose + x_hand
+
+        x = self.pos_encoder(x)
+        x = self.encoder(x, src_key_padding_mask=~video_mask)
+        x = self.encoder_norm(x)
+
+        return x
+
+    def forward(self, features, labels=None, video_mask=None):
+        if video_mask is None:
+            raise ValueError("video_mask is required")
+
+        video_mask = video_mask.bool()
+
+        x = self.encode(features, video_mask)
+
+        frame_scores = self.frame_importance_head(x).squeeze(-1)
+        frame_scores = frame_scores.masked_fill(~video_mask, -1e9)
+
+        frame_importance = torch.softmax(frame_scores, dim=1)
+
+        pooled = torch.sum(x * frame_importance.unsqueeze(-1), dim=1)
+
+        logits = self.classifier(pooled)
+
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+
+        return {"logits": logits, "loss": loss, "frame_importance": frame_importance, "encoded": x}
 
 
 class CrossAttentionLayer(nn.Module):
@@ -202,7 +251,8 @@ class ISLR_Transformer_GCN(nn.Module):
         pose_features = features[:, :, :_N_POSE * _COORD_DIM]
         hand_features = features[:, :, _N_POSE * _COORD_DIM:]
 
-        x_gcn = self.encode_gcn(features[:, :, _N_POSE * _COORD_DIM:].clone().reshape(B, T, _N_HAND * 2, _COORD_DIM),  video_mask)
+        x_gcn = self.encode_gcn(features[:, :, _N_POSE * _COORD_DIM:].clone().reshape(B, T, _N_HAND * 2, _COORD_DIM),
+                                video_mask)
         x_pose = self.pose_projection(pose_features)
         x_hand = self.hand_projection(hand_features)
 
@@ -283,118 +333,6 @@ class SpatialGCNBlock(nn.Module):
         return self.drop(self.act(out))
 
 
-class ShortTermTCN(nn.Module):
-    """Nửa kênh đầu — học chuyển động NGẮN HẠN bằng Conv1d theo thời gian."""
-
-    def __init__(self, channels, kernel_size=9, dropout=0.1):
-        super().__init__()
-        pad = (kernel_size - 1) // 2
-        self.conv = nn.Conv1d(channels, channels, kernel_size=kernel_size, padding=pad, bias=False)
-        self.bn = nn.BatchNorm1d(channels)
-        self.act = nn.GELU()
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x):
-        # x: (B, T, C) -> (B, T, C)
-        x = x.transpose(1, 2)  # (B, C, T)
-        x = self.drop(self.act(self.bn(self.conv(x))))
-        return x.transpose(1, 2)
-
-
-class LongTermTransformer(nn.Module):
-    """Nửa kênh còn lại — học chuyển động DÀI HẠN bằng self-attention toàn chuỗi."""
-
-    def __init__(self, d_model, nhead=8, dim_feedforward=1024, num_layers=4, dropout=0.1, max_seq_len=5000):
-        super().__init__()
-        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
-                                                   dropout=dropout, batch_first=True, norm_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.norm = nn.LayerNorm(d_model)
-
-    def forward(self, x, video_mask):
-        # x: (B, T, C), video_mask: (B, T) bool
-        x = self.pos_encoder(x)
-        x = self.encoder(x, src_key_padding_mask=~video_mask)
-        return self.norm(x)
-
-
-class ISLR_6(nn.Module):
-    """
-    1) Mỗi frame áp dụng GCN theo KHÔNG GIAN (SpatialGCNBlock) — không TCN
-       trong bước này, xử lý độc lập từng frame.
-    2) Sau khi pool theo node -> (B,T,C), CHIA ĐÔI kênh:
-           nửa 1 -> TCN          (ngắn hạn)
-           nửa 2 -> Transformer  (dài hạn)
-    3) Ghép lại 2 nửa đã học -> pool theo T -> classifier.
-    4) KHÔNG có cross-attention / 2-stream phức tạp như V5 (bỏ tạm phần đó).
-    """
-
-    def __init__(self, gcn_channels=(128, 128, 256, 256), gcn_decouple_p=4, tcn_kernel_size=9, num_transformer_layers=4,
-                 nhead=8, dim_feedforward=1024, dropout=0.2, max_seq_len=5000, num_classes=1000, ):
-        super().__init__()
-
-        assert gcn_channels[-1] % 2 == 0, "kênh GCN cuối phải chia hết cho 2 để tách nửa TCN / nửa Transformer"
-
-        self.num_nodes = _NUM_NODE
-        self.register_buffer('adjacency_matrix', build_adjacency())
-
-        # out_ch truyền vào đây hiện KHÔNG có tác dụng thật (xem ghi chú đầu
-        # câu trả lời) — output thật của FusionStem vẫn là _COORD_DIM kênh.
-        self.stem = FusionStem(_COORD_DIM, gcn_channels[0], self.num_nodes)
-
-        ch = [_COORD_DIM, *gcn_channels]  # input đầu tiên của GCN = _COORD_DIM, khớp output thật của stem hiện tại
-        self.gcn_blocks = nn.ModuleList(
-            [SpatialGCNBlock(ch[i], ch[i + 1], self.num_nodes, self.adjacency_matrix, p=gcn_decouple_p, dropout=dropout)
-             for i in range(len(ch) - 1)])
-
-        gcn_out = gcn_channels[-1]
-        self.half = gcn_out // 2
-
-        self.short_term = ShortTermTCN(self.half, kernel_size=tcn_kernel_size, dropout=dropout)
-        self.long_term = LongTermTransformer(self.half, nhead=nhead, dim_feedforward=dim_feedforward,
-                                             num_layers=num_transformer_layers, dropout=dropout,
-                                             max_seq_len=max_seq_len)
-
-        self.classifier = nn.Sequential(nn.LayerNorm(gcn_out), nn.Dropout(dropout), nn.Linear(gcn_out, num_classes), )
-
-    def encode_gcn(self, features):
-        # features: (B, T, 3N, C_in) -> stem gộp 3 nhóm (position/shape/average) -> (B,T,N,_COORD_DIM)
-        x = self.stem(features)
-
-        for block in self.gcn_blocks:
-            x = block(x)  # (B, T, N, C_out) — chỉ GCN, không TCN
-
-        return x.mean(dim=-2)  # (B, T, C_out) — pool theo node
-
-    def forward(self, features, labels=None, video_mask=None):
-        if video_mask is None:
-            raise ValueError("video_mask is required")
-        video_mask = video_mask.bool()
-
-        B, T, _ = features.shape
-        x = self.encode_gcn(features.clone().reshape(B, T, self.num_nodes * 3, _COORD_DIM))  # (B,T,gcn_out)
-
-        x_short, x_long = x[..., :self.half], x[..., self.half:]
-
-        x_short = self.short_term(x_short)  # (B,T,half) — ngắn hạn
-        x_long = self.long_term(x_long, video_mask)  # (B,T,half) — dài hạn
-
-        fused = torch.cat([x_short, x_long], dim=-1)  # (B,T,gcn_out)
-
-        pooled = masked_mean_pool(fused, video_mask)
-        logits = self.classifier(pooled)
-
-        loss = None
-        if labels is not None:
-            loss = F.cross_entropy(logits, labels)
-
-        return logits, loss
-
-
-import torch.nn.functional as F
-
-
 class ISLR_EncoderDecoder(nn.Module):
     def __init__(self, input_dim=_NUM_NODE * _COORD_DIM, hidden_dim=256, num_encoder_layers=6, num_decoder_layers=2,
                  nhead=8, dim_feedforward=256 * 8, dropout=0.2, max_seq_len=5000, num_classes=1000, num_queries=1):
@@ -462,3 +400,130 @@ class ISLR_EncoderDecoder(nn.Module):
             loss = F.cross_entropy(logits, labels)
 
         return logits, loss
+
+
+class TemporalShift(nn.Module):
+    def __init__(self, net, n_segment, fold_div=8):
+        super().__init__()
+        self.net, self.n_segment, self.fold_div = net, n_segment, fold_div
+
+    def forward(self, x):  # x: (N*K, C, H, W), các frame của cùng 1 chuỗi nằm liền nhau
+        nt, c, h, w = x.shape
+        x = x.view(nt // self.n_segment, self.n_segment, c, h, w)
+        fold = c // self.fold_div
+        out = torch.zeros_like(x)
+        out[:, :-1, :fold] = x[:, 1:, :fold]  # frame t nhận từ t+1
+        out[:, 1:, fold:2 * fold] = x[:, :-1, fold:2 * fold]  # frame t nhận từ t-1
+        out[:, :, 2 * fold:] = x[:, :, 2 * fold:]
+        return self.net(out.view(nt, c, h, w))
+
+
+class RGBEncoder(nn.Module):
+    def __init__(self, d_model=256, dropout=0.2, pretrained=True):
+        super().__init__()
+        resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT if pretrained else None)
+
+        self.shift_modules = []
+        for layer in (resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4):
+            for block in layer:
+                if isinstance(block, BasicBlock):
+                    block.conv1 = TemporalShift(block.conv1, n_segment=1)  # cập nhật theo T ở forward
+                    self.shift_modules.append(block.conv1)
+
+        self.backbone = nn.Sequential(*list(resnet.children())[:-1])  # (N,512,1,1)
+        self.proj = nn.Sequential(nn.Linear(512, d_model), nn.GELU(), nn.Dropout(dropout), nn.LayerNorm(d_model))
+        self.time_embed = nn.Sequential(nn.Linear(1, d_model), nn.GELU(), nn.Linear(d_model, d_model))
+
+    def forward(self, rgb_frames, video_mask):
+        B, T, C, H, W = rgb_frames.shape
+        for m in self.shift_modules:
+            m.n_segment = T
+
+        x = rgb_frames.reshape(B * T, C, H, W)
+        x = self.backbone(x).view(B, T, 512)
+        x = self.proj(x)  # (B,T,d_model)
+
+        lengths = video_mask.bool().sum(dim=1, keepdim=True).clamp(min=2).float()  # (B,1)
+        pos = torch.arange(T, device=x.device).float().unsqueeze(0)  # (1,T)
+        t = (pos / (lengths - 1)).clamp(max=1.0).unsqueeze(-1)  # (B,T,1)
+        return x + self.time_embed(t)
+
+
+class PoseRGBFusionModel(nn.Module):
+    def __init__(self, num_classes=1000, d_model=256, nhead=8, num_fusion_layers=2, proj_dim=128, dropout=0.2):
+        super().__init__()
+
+        # Encoder
+        self.pose_encoder = ISLR_Transformer(hidden_dim=d_model, dropout=dropout, num_classes=num_classes)
+        self.rgb_encoder = RGBEncoder(d_model=d_model, dropout=dropout)
+
+        # Stage 1: projection head + temperature (chỉ dùng khi pretrain)
+        def head():
+            return nn.Sequential(nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, proj_dim))
+
+        self.pose_head, self.rgb_head = head(), head()
+        self.logit_scale = nn.Parameter(torch.tensor(2.6593))  # ln(1/0.07) như CLIP
+
+        # Stage 2: cross-attention hai chiều
+        self.pose_from_rgb = nn.ModuleList(
+            [CrossAttentionLayer(d_model, nhead, dropout=dropout) for _ in range(num_fusion_layers)])
+        self.rgb_from_pose = nn.ModuleList(
+            [CrossAttentionLayer(d_model, nhead, dropout=dropout) for _ in range(num_fusion_layers)])
+        self.fusion_norm = nn.LayerNorm(2 * d_model)
+        self.drop = nn.Dropout(dropout)
+        self.classifier = nn.Linear(2 * d_model, num_classes)
+
+    # ---------------- encode ----------------
+    def encode(self, pose_feature, rgb_feature, video_mask):
+        video_mask = video_mask.bool()
+        pose = self.pose_encoder.encode(pose_feature, video_mask)  # (B,T,D)
+        rgb = self.rgb_encoder(rgb_feature, video_mask)  # (B,T,D)
+        return pose, rgb
+
+    # ---------------- Stage 1 ----------------
+    @staticmethod
+    def _info_nce(a, b, scale):
+        logits = scale * a @ b.t()
+        target = torch.arange(a.size(0), device=a.device)
+        return 0.5 * (F.cross_entropy(logits, target) + F.cross_entropy(logits.t(), target))
+
+    def forward_pretrain(self, pose_feature, rgb_feature, video_mask):
+        """Không dùng label. Cùng video = positive, khác video = negative (InfoNCE đối xứng)."""
+        video_mask = video_mask.bool()
+        pose, rgb = self.encode(pose_feature, rgb_feature, video_mask)
+        scale = self.logit_scale.exp().clamp(max=100)
+
+        # cả hai đều pool có mask (RGB cũng có T frame kèm padding)
+        p_g = F.normalize(self.pose_head(masked_mean_pool(pose, video_mask)), dim=-1)
+        r_g = F.normalize(self.rgb_head(masked_mean_pool(rgb, video_mask)), dim=-1)
+        loss = self._info_nce(p_g, r_g, scale)
+
+        return {"loss": loss, "loss_video": loss.detach(), "p_g": p_g.detach(), "r_g": r_g.detach()}
+
+    # ---------------- Stage 2 ----------------
+    def forward(self, pose_feature, rgb_feature, labels=None, video_mask=None):
+        video_mask = video_mask.bool()
+        pose, rgb = self.encode(pose_feature, rgb_feature, video_mask)
+        pad = ~video_mask  # True = padding (pose và RGB dùng chung mask vì cùng T frame)
+
+        for pose_layer, rgb_layer in zip(self.pose_from_rgb, self.rgb_from_pose):
+            new_pose = pose_layer(pose, rgb, pad)  # Pose Query -> RGB Key/Value
+            new_rgb = rgb_layer(rgb, pose, pad)  # RGB Query  -> Pose Key/Value
+            pose, rgb = new_pose, new_rgb
+
+        pooled = torch.cat([masked_mean_pool(pose, video_mask), masked_mean_pool(rgb, video_mask)], dim=-1)
+        logits = self.classifier(self.drop(self.fusion_norm(pooled)))
+
+        loss = F.cross_entropy(logits, labels) if labels is not None else None
+        return {"logits": logits, "loss": loss}
+
+    # ---------------- tiện ích ----------------
+    def freeze_encoders(self, freeze=True):
+        """Dùng ở đầu Stage 2 (vài epoch đầu) để fusion không phá embedding đã pretrain."""
+        for m in (self.pose_encoder, self.rgb_encoder):
+            for p in m.parameters():
+                p.requires_grad = not freeze
+
+    def load_pretrained(self, path):
+        ckpt = torch.load(path, map_location="cpu")
+        print(self.load_state_dict(ckpt.get("model", ckpt), strict=False))

@@ -75,7 +75,7 @@ def main(args):
         num_classes=num_classes,
     )
 
-    model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
+    model = ISLR_Transformer(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")

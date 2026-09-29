@@ -1,16 +1,62 @@
 import torch
-import torch.nn as nn
-from config import _N_POSE, _N_HAND, _NUM_NODE, _REMOVE_POSE_IDX
+from torch import nn
 
-_HAND_BONES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (0, 9), (9, 10), (10, 11), (11, 12),
-               (0, 13), (13, 14), (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20), (5, 9), (9, 13),
-               (13, 17), ]
+from config import _N_HAND, _N_POSE, _REMOVE_POSE_IDX
+
+_HAND_BONES = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 4),
+    (0, 5),
+    (5, 6),
+    (6, 7),
+    (7, 8),
+    (0, 9),
+    (9, 10),
+    (10, 11),
+    (11, 12),
+    (0, 13),
+    (13, 14),
+    (14, 15),
+    (15, 16),
+    (0, 17),
+    (17, 18),
+    (18, 19),
+    (19, 20),
+    (5, 9),
+    (9, 13),
+    (13, 17),
+]
 
 # Each undirected edge listed once
 _POSE_BONES = [  # face
-    (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8), (9, 10),  # torso / arms
-    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16), (11, 23), (12, 24), (23, 24),  # hands (pose-model fingers)
-    (15, 17), (15, 19), (15, 21), (17, 19), (16, 18), (16, 20), (16, 22), (18, 20), ]
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 7),
+    (0, 4),
+    (4, 5),
+    (5, 6),
+    (6, 8),
+    (9, 10),  # torso / arms
+    (11, 12),
+    (11, 13),
+    (13, 15),
+    (12, 14),
+    (14, 16),
+    (11, 23),
+    (12, 24),
+    (23, 24),  # hands (pose-model fingers)
+    (15, 17),
+    (15, 19),
+    (15, 21),
+    (17, 19),
+    (16, 18),
+    (16, 20),
+    (16, 22),
+    (18, 20),
+]
 
 CUSTOM_EDGES = [(0, 11), (0, 12)]  # nose -> shoulders
 
@@ -23,7 +69,11 @@ n_pose_kept = len(remaining_nodes)
 
 
 def _remap(edges):
-    return [(old_to_new[a], old_to_new[b]) for a, b in edges if a in old_to_new and b in old_to_new]
+    return [
+        (old_to_new[a], old_to_new[b])
+        for a, b in edges
+        if a in old_to_new and b in old_to_new
+    ]
 
 
 pose_edges = _remap(_POSE_BONES)
@@ -37,15 +87,19 @@ _RIGHT_HAND_EDGES = [(_RIGHT_WRIST + i, _RIGHT_WRIST + j) for i, j in _HAND_BONE
 
 # Optional: link pose wrists to hand-model wrists
 wrist_links = []
-if 15 in old_to_new: wrist_links.append((old_to_new[15], _LEFT_WRIST))
-if 16 in old_to_new: wrist_links.append((old_to_new[16], _RIGHT_WRIST))
+if 15 in old_to_new:
+    wrist_links.append((old_to_new[15], _LEFT_WRIST))
+if 16 in old_to_new:
+    wrist_links.append((old_to_new[16], _RIGHT_WRIST))
 
-FULL_BODY_EDGES = (_LEFT_HAND_EDGES + _RIGHT_HAND_EDGES + wrist_links)
+FULL_BODY_EDGES = _LEFT_HAND_EDGES + _RIGHT_HAND_EDGES + wrist_links
 
 # Sanity check
 n_nodes = n_pose_kept + 2 * _N_HAND
 assert all(0 <= a < n_nodes and 0 <= b < n_nodes for a, b in FULL_BODY_EDGES)
-assert len({tuple(sorted(e)) for e in FULL_BODY_EDGES}) == len(FULL_BODY_EDGES), "duplicate edges"
+assert len({tuple(sorted(e)) for e in FULL_BODY_EDGES}) == len(FULL_BODY_EDGES), (
+    "duplicate edges"
+)
 
 
 def build_adjacency_from_edges(edges, num_nodes):
@@ -68,7 +122,10 @@ def _normalize_adjacency(A):
 
 
 def _build_hand_group_edges(offset):
-    edges = [(offset + 0, offset + 1), (offset + 1, offset + 2), ]
+    edges = [
+        (offset + 0, offset + 1),
+        (offset + 1, offset + 2),
+    ]
     edges += [(offset + 2 + i, offset + 2 + j) for i, j in _HAND_BONES]
     return edges
 
@@ -78,9 +135,15 @@ class TemporalConv(nn.Module):
         super().__init__()
 
         pad = (kernel_size - 1) // 2
-        self.conv = nn.Conv2d(out_channels=channels, in_channels=channels, kernel_size=(kernel_size, 1),
-                              # (out_channels, in_channels, kernel_H, kernel_W)
-                              padding=(pad, 0), stride=(stride, 1), bias=False)
+        self.conv = nn.Conv2d(
+            out_channels=channels,
+            in_channels=channels,
+            kernel_size=(kernel_size, 1),
+            # (out_channels, in_channels, kernel_H, kernel_W)
+            padding=(pad, 0),
+            stride=(stride, 1),
+            bias=False,
+        )
         self.bn = nn.BatchNorm2d(channels)
         self.drop = nn.Dropout(dropout)
 
@@ -98,11 +161,17 @@ class MultiScaleTemporalConv(nn.Module):
     def __init__(self, channels, dropout=0.1):
         super().__init__()
 
-        self.conv3 = nn.Conv2d(channels, channels, kernel_size=(3, 1), padding=(1, 0), bias=False)
+        self.conv3 = nn.Conv2d(
+            channels, channels, kernel_size=(3, 1), padding=(1, 0), bias=False
+        )
 
-        self.conv9 = nn.Conv2d(channels, channels, kernel_size=(9, 1), padding=(4, 0), bias=False)
+        self.conv9 = nn.Conv2d(
+            channels, channels, kernel_size=(9, 1), padding=(4, 0), bias=False
+        )
 
-        self.conv15 = nn.Conv2d(channels, channels, kernel_size=(15, 1), padding=(7, 0), bias=False)
+        self.conv15 = nn.Conv2d(
+            channels, channels, kernel_size=(15, 1), padding=(7, 0), bias=False
+        )
 
         self.bn = nn.BatchNorm2d(channels * 3)
 
@@ -135,9 +204,15 @@ class GCNBlock(nn.Module):
         self.register_buffer("I", torch.eye(num_nodes))
         self.register_buffer("A", base_adjacency.float())
         self.A_delta = self.A_delta = nn.ParameterList(
-            [nn.Parameter(torch.zeros(num_nodes, num_nodes)) for _ in range(1)])
+            [nn.Parameter(torch.zeros(num_nodes, num_nodes)) for _ in range(1)]
+        )
 
-        self.linear = nn.Sequential(nn.Linear(in_ch, out_ch), nn.GELU(), nn.Dropout(dropout), nn.LayerNorm(out_ch))
+        self.linear = nn.Sequential(
+            nn.Linear(in_ch, out_ch),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.LayerNorm(out_ch),
+        )
 
         # self.tcn = TemporalConv(out_ch, kernel_size=9)
         self.tcn = MultiScaleTemporalConv(out_ch)
@@ -158,7 +233,7 @@ class GCNBlock(nn.Module):
         res = self.residual(features)
         x = self.linear(features)
 
-        x = torch.einsum('vw,btwc->btvc', self._normalized_A(), x)
+        x = torch.einsum("vw,btwc->btvc", self._normalized_A(), x)
         x = self.act(x)
 
         if m is not None:
@@ -173,8 +248,9 @@ class GCNBlock(nn.Module):
 
 
 class DecoupledGCN(nn.Module):
-
-    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=4):
+    def __init__(
+        self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=4
+    ):
         super().__init__()
 
         self.V = num_nodes
@@ -184,9 +260,13 @@ class DecoupledGCN(nn.Module):
         base_adjacency = base_adjacency.float()
         self.register_buffer("I", torch.eye(self.V))  # (1, N, N)
 
-        self.A_in = nn.Parameter(base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
+        self.A_in = nn.Parameter(
+            base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3
+        )  # (p, N, N)
 
-        self.A_out = nn.Parameter(base_adjacency.t().unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
+        self.A_out = nn.Parameter(
+            base_adjacency.t().unsqueeze(0).repeat(self.p, 1, 1) * 1e-3
+        )  # (p, N, N)
 
     def _raw_A(self):
         return self.I.unsqueeze(0) + self.A_in + self.A_out
@@ -205,14 +285,16 @@ class DecoupledGCN(nn.Module):
 
         out = 0
         for k in range(self.p):
-            out = out + torch.einsum('vw,btwc->btvc', A_norm[k], feat)
+            out = out + torch.einsum("vw,btwc->btvc", A_norm[k], feat)
         out = out / self.p
 
         return out, A_raw
 
 
 class SelfPacingDroppingBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, decouple_p=4, drop=True):
+    def __init__(
+        self, in_ch, out_ch, num_nodes, base_adjacency, decouple_p=4, drop=True
+    ):
         super().__init__()
 
         self.gcn = DecoupledGCN(in_ch, out_ch, num_nodes, base_adjacency, decouple_p)
@@ -221,7 +303,7 @@ class SelfPacingDroppingBlock(nn.Module):
     def forward(self, x, mask):
         m = None if mask is None else mask[:, :, None, None].to(x.dtype)
 
-        feat, A_raw = self.gcn(x)
+        feat, _A_raw = self.gcn(x)
         if m is not None:
             feat = feat * m
         feat = self.tcn(feat)
@@ -232,18 +314,30 @@ class SelfPacingDroppingBlock(nn.Module):
 
 
 class SPDStack(nn.Module):
-
-    def __init__(self, channels, num_nodes, base_adjacency, groups, num_drop_per_group=1, decouple_p=4):
+    def __init__(
+        self,
+        channels,
+        num_nodes,
+        base_adjacency,
+        groups,
+        num_drop_per_group=1,
+        decouple_p=4,
+    ):
         super().__init__()
 
         num_blocks = len(channels) - 1
         self.blocks = nn.ModuleList()
 
         for i in range(num_blocks):
-            is_last = (i == num_blocks - 1)
+            is_last = i == num_blocks - 1
 
-            block = SelfPacingDroppingBlock(in_ch=channels[i], out_ch=channels[i + 1], num_nodes=num_nodes,
-                                            base_adjacency=base_adjacency, groups=[], )
+            block = SelfPacingDroppingBlock(
+                in_ch=channels[i],
+                out_ch=channels[i + 1],
+                num_nodes=num_nodes,
+                base_adjacency=base_adjacency,
+                groups=[],
+            )
 
             self.blocks.append(block)
 
@@ -256,6 +350,7 @@ class SPDStack(nn.Module):
             feat, _ = block(feat)
 
         return feat
+
 
 # class SimpleTCN(nn.Module):
 #     def __init__(self, channels, kernel_size=9):

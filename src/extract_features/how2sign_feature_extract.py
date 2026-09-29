@@ -1,18 +1,23 @@
 import os
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-from src.utils.pose_detection import PoseDetection
-
-from src.utils.face_detection import FaceDetection
 import cv2
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from config import HOW2SIGN_RAW_DATA, ROOT
+from config import ROOT
+from src.utils.face_detection import FaceDetection
 from src.utils.hand_detection import HandDetection
+from src.utils.pose_detection import PoseDetection
 
-SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_how2sign",)
+SAVE_DIR = os.path.join(
+    ROOT,
+    "datasets",
+    "processed",
+    "full_body_how2sign",
+)
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 csv_path = os.path.join(ROOT, r"datasets\annotations\how2sign_train.csv")
@@ -66,7 +71,6 @@ pose_detection = PoseDetection()
 # cap.release()
 
 for _, row in tqdm(df.iterrows(), total=len(df)):
-
     hand_detection = HandDetection()
     pose_detection = PoseDetection()
 
@@ -74,21 +78,13 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
     sentence = row["SENTENCE"]
 
     video_path = os.path.join(
-        ROOT,
-        "datasets",
-        "processed",
-        "how2sign_resized",
-        f"{video_name}.mp4"
+        ROOT, "datasets", "processed", "how2sign_resized", f"{video_name}.mp4"
     )
 
-    dir_name = os.path.join(
-        SAVE_DIR,
-        video_name
-    )
+    dir_name = os.path.join(SAVE_DIR, video_name)
 
     if os.path.isdir(dir_name):
         continue
-
 
     if not os.path.exists(video_path):
         print("Missing:", video_path)
@@ -107,7 +103,6 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
     pose_features = []
 
     while True:
-
         success, frame = cap.read()
         if not success:
             break
@@ -116,15 +111,9 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
 
         timestamp_ms = int(frame_index * 1000 / fps)
 
-        detection_hand_results = hand_detection.detect_video(
-            frame,
-            timestamp_ms
-        )
+        detection_hand_results = hand_detection.detect_video(frame, timestamp_ms)
 
-        detection_pose_results = pose_detection.detect_video(
-            frame,
-            timestamp_ms
-        )
+        detection_pose_results = pose_detection.detect_video(frame, timestamp_ms)
 
         # --------------------------------------------------
         # HAND
@@ -137,17 +126,14 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
         hand_landmarks = detection_hand_results.hand_landmarks
 
         if hand_landmarks is not None and len(hand_landmarks) > 0:
-
             for i, hand_info in enumerate(handedness):
-
                 if i >= len(hand_landmarks):
                     continue
 
                 category = hand_info[0]
 
                 coords = np.array(
-                    [[lm.x, lm.y, lm.z] for lm in hand_landmarks[i]],
-                    dtype=np.float32
+                    [[lm.x, lm.y, lm.z] for lm in hand_landmarks[i]], dtype=np.float32
                 )
 
                 coords = np.nan_to_num(coords)
@@ -172,12 +158,10 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
             detection_pose_results.pose_landmarks is not None
             and len(detection_pose_results.pose_landmarks) > 0
         ):
-
             pose_landmarks = detection_pose_results.pose_landmarks[0]
 
             pose_coords = np.array(
-                [[lm.x, lm.y, lm.z] for lm in pose_landmarks],
-                dtype=np.float32
+                [[lm.x, lm.y, lm.z] for lm in pose_landmarks], dtype=np.float32
             )
 
             pose_coords = np.nan_to_num(pose_coords)
@@ -186,17 +170,11 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
         # SAVE FRAME FEATURES
         # --------------------------------------------------
 
-        right_hand_features.append(
-            right_hand.flatten()
-        )
+        right_hand_features.append(right_hand.flatten())
 
-        left_hand_features.append(
-            left_hand.flatten()
-        )
+        left_hand_features.append(left_hand.flatten())
 
-        pose_features.append(
-            pose_coords.flatten()
-        )
+        pose_features.append(pose_coords.flatten())
 
         frame_index += 1
 
@@ -211,82 +189,34 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
     # TO NUMPY
     # --------------------------------------------------
 
-    right_hand_features = np.array(
-        right_hand_features,
-        dtype=np.float32
-    )
+    right_hand_features = np.array(right_hand_features, dtype=np.float32)
 
-    left_hand_features = np.array(
-        left_hand_features,
-        dtype=np.float32
-    )
+    left_hand_features = np.array(left_hand_features, dtype=np.float32)
 
-    pose_features = np.array(
-        pose_features,
-        dtype=np.float32
-    )
+    pose_features = np.array(pose_features, dtype=np.float32)
 
-    right_hand_features = np.nan_to_num(
-        right_hand_features
-    )
+    right_hand_features = np.nan_to_num(right_hand_features)
 
-    left_hand_features = np.nan_to_num(
-        left_hand_features
-    )
+    left_hand_features = np.nan_to_num(left_hand_features)
 
-    pose_features = np.nan_to_num(
-        pose_features
-    )
+    pose_features = np.nan_to_num(pose_features)
 
     # --------------------------------------------------
     # SAVE
     # --------------------------------------------------
 
-    dir_name = os.path.join(
-        SAVE_DIR,
-        video_name
-    )
+    dir_name = os.path.join(SAVE_DIR, video_name)
 
-    os.makedirs(
-        dir_name,
-        exist_ok=True
-    )
+    os.makedirs(dir_name, exist_ok=True)
 
-    np.save(
-        os.path.join(
-            dir_name,
-            "right_hand.npy"
-        ),
-        right_hand_features
-    )
+    np.save(os.path.join(dir_name, "right_hand.npy"), right_hand_features)
 
-    np.save(
-        os.path.join(
-            dir_name,
-            "left_hand.npy"
-        ),
-        left_hand_features
-    )
+    np.save(os.path.join(dir_name, "left_hand.npy"), left_hand_features)
 
-    np.save(
-        os.path.join(
-            dir_name,
-            "pose.npy"
-        ),
-        pose_features
-    )
+    np.save(os.path.join(dir_name, "pose.npy"), pose_features)
 
-    with open(
-        os.path.join(
-            dir_name,
-            "text.txt"
-        ),
-        "w",
-        encoding="utf-8"
-    ) as f:
-        f.write(
-            sentence.lower().strip()
-        )
+    with open(os.path.join(dir_name, "text.txt"), "w", encoding="utf-8") as f:
+        f.write(sentence.lower().strip())
 
     print(
         f"Saved: {video_name} | "

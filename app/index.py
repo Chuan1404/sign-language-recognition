@@ -1,15 +1,21 @@
-from flask import render_template, Response, jsonify, send_file
 import os
-import cv2 as cv
 
-from app.utils import get_start_zone, point_in_zone, draw_start_zone, draw_action_zones, wrist_in_zone
-from config import FRAME_W, FRAME_H, _COORD_DIM, BACKSPACE_ZONE, CLEAR_ZONE
+import cv2 as cv
+from flask import Response, jsonify, render_template, send_file
+
+from app.utils import (
+    draw_action_zones,
+    draw_start_zone,
+    get_start_zone,
+    point_in_zone,
+    wrist_in_zone,
+)
+from config import _COORD_DIM, BACKSPACE_ZONE, CLEAR_ZONE, FRAME_H, FRAME_W
 
 _ZONE_ANCHOR_POSE_IDX = (11, 12)
 
 
 class SignDetectionApp:
-
     def __init__(self, flask_app, service, camera, gloss_list, wlasl_video_dir):
         self.app = flask_app
         self.service = service
@@ -24,16 +30,22 @@ class SignDetectionApp:
     def register_routes(self):
         self.app.add_url_rule("/", "index", self.index)
         self.app.add_url_rule("/video", "video", self.video)
-        self.app.add_url_rule("/predicted_text", "predicted_text", self.get_predicted_text)
+        self.app.add_url_rule(
+            "/predicted_text", "predicted_text", self.get_predicted_text
+        )
         self.app.add_url_rule("/glosses", "glosses", self.get_glosses)
         self.app.add_url_rule("/video_file/<video_id>", "video_file", self.serve_video)
-        self.app.add_url_rule("/clear_text", "clear_text", self.clear_text, methods=["POST"])
+        self.app.add_url_rule(
+            "/clear_text", "clear_text", self.clear_text, methods=["POST"]
+        )
 
     def index(self):
         return render_template("index.html")
 
     def video(self):
-        return Response(self.generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+        return Response(
+            self.generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame"
+        )
 
     def get_predicted_text(self):
         return jsonify(words=self.predicted_text)
@@ -76,7 +88,6 @@ class SignDetectionApp:
         clear_triggered = False
 
         while True:
-
             success, frame = self.camera.read()
 
             if not success:
@@ -96,27 +107,51 @@ class SignDetectionApp:
             # Detection
             # -------------------------
 
-            hand_results, pose_results = self.service.detect(rgb_frame, timestamp_ms, )
+            hand_results, pose_results = self.service.detect(
+                rgb_frame,
+                timestamp_ms,
+            )
 
-            (detection_hand_results, left_coors, right_coors, left_detected, right_detected,) = hand_results
+            (
+                _detection_hand_results,
+                left_coors,
+                right_coors,
+                left_detected,
+                right_detected,
+            ) = hand_results
 
-            (detection_pose_results, pose_coors, pose_detected,) = pose_results
+            (
+                _detection_pose_results,
+                pose_coors,
+                pose_detected,
+            ) = pose_results
 
             # -------------------------
             # Zone condition
             # -------------------------
 
-            right_in_zone = (right_detected and point_in_zone(right_coors[0, 0] * frame_w, right_coors[0, 1] * frame_h,
-                start_zone, ))
+            right_in_zone = right_detected and point_in_zone(
+                right_coors[0, 0] * frame_w,
+                right_coors[0, 1] * frame_h,
+                start_zone,
+            )
 
-            left_in_zone = (left_detected and point_in_zone(left_coors[0, 0] * frame_w, left_coors[0, 1] * frame_h,
-                start_zone, ))
+            left_in_zone = left_detected and point_in_zone(
+                left_coors[0, 0] * frame_w,
+                left_coors[0, 1] * frame_h,
+                start_zone,
+            )
 
-            pose_anchor_in_zone = (pose_detected and all(
-                point_in_zone(pose_coors[idx, 0] * frame_w, pose_coors[idx, 1] * frame_h, start_zone, ) for idx in
-                _ZONE_ANCHOR_POSE_IDX))
+            pose_anchor_in_zone = pose_detected and all(
+                point_in_zone(
+                    pose_coors[idx, 0] * frame_w,
+                    pose_coors[idx, 1] * frame_h,
+                    start_zone,
+                )
+                for idx in _ZONE_ANCHOR_POSE_IDX
+            )
 
-            hand_in_zone = ((right_in_zone or left_in_zone) and pose_anchor_in_zone)
+            hand_in_zone = (right_in_zone or left_in_zone) and pose_anchor_in_zone
 
             # -------------------------
             # Start recording
@@ -136,7 +171,6 @@ class SignDetectionApp:
             # -------------------------
 
             if recording:
-
                 pose_buf.append(pose_coors[:, :_COORD_DIM])
                 right_hand_buf.append(right_coors[:, :_COORD_DIM])
                 left_hand_buf.append(left_coors[:, :_COORD_DIM])
@@ -144,9 +178,13 @@ class SignDetectionApp:
                 frame_index += 1
 
                 if not hand_in_zone:
-
                     if wait_missing > 9:
-                        word = self.service.predict(pose_buf, left_hand_buf, right_hand_buf, self.predicted_text, )
+                        word = self.service.predict(
+                            pose_buf,
+                            left_hand_buf,
+                            right_hand_buf,
+                            self.predicted_text,
+                        )
 
                         self.predicted_text.append(word)
 
@@ -164,36 +202,32 @@ class SignDetectionApp:
             # Action zones
             # -------------------------
 
-            any_in_backspace = (wrist_in_zone(right_coors, right_detected, BACKSPACE_ZONE) or wrist_in_zone(left_coors,
-                                                                                                            left_detected,
-                                                                                                            BACKSPACE_ZONE))
+            any_in_backspace = wrist_in_zone(
+                right_coors, right_detected, BACKSPACE_ZONE
+            ) or wrist_in_zone(left_coors, left_detected, BACKSPACE_ZONE)
 
-            any_in_clear = (
-                    wrist_in_zone(right_coors, right_detected, CLEAR_ZONE) or wrist_in_zone(left_coors, left_detected,
-                                                                                            CLEAR_ZONE))
+            any_in_clear = wrist_in_zone(
+                right_coors, right_detected, CLEAR_ZONE
+            ) or wrist_in_zone(left_coors, left_detected, CLEAR_ZONE)
 
             # Backspace
 
             if any_in_backspace:
-
                 backspace_frames += 1
 
                 if backspace_frames == ACTION_HOLD and not backspace_triggered:
-
                     if self.predicted_text:
                         self.predicted_text.pop()
 
                     backspace_triggered = True
 
             else:
-
                 backspace_frames = 0
                 backspace_triggered = False
 
             # Clear
 
             if any_in_clear:
-
                 clear_frames += 1
 
                 if clear_frames == ACTION_HOLD and not clear_triggered:
@@ -201,7 +235,6 @@ class SignDetectionApp:
                     clear_triggered = True
 
             else:
-
                 clear_frames = 0
                 clear_triggered = False
 
@@ -209,7 +242,11 @@ class SignDetectionApp:
             # Draw
             # -------------------------
 
-            rgb_frame = self.service.draw(rgb_frame, hand_results, pose_results, )
+            rgb_frame = self.service.draw(
+                rgb_frame,
+                hand_results,
+                pose_results,
+            )
 
             frame = cv.cvtColor(rgb_frame, cv.COLOR_RGB2BGR)
 
@@ -217,18 +254,25 @@ class SignDetectionApp:
 
             display_frame = draw_start_zone(display_frame, start_zone, recording)
 
-            display_frame = draw_action_zones(display_frame, any_in_backspace, any_in_clear)
+            display_frame = draw_action_zones(
+                display_frame, any_in_backspace, any_in_clear
+            )
 
             # -------------------------
             # JPEG
             # -------------------------
 
-            ret, buffer = cv.imencode(".jpg", display_frame, [cv.IMWRITE_JPEG_QUALITY, 60], )
+            ret, buffer = cv.imencode(
+                ".jpg",
+                display_frame,
+                [cv.IMWRITE_JPEG_QUALITY, 60],
+            )
 
             if not ret:
                 continue
 
             frame_bytes = buffer.tobytes()
 
-            yield (b"--frame\r\n"
-                   b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+            yield (
+                b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+            )

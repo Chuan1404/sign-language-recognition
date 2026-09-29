@@ -7,17 +7,19 @@ import argparse
 import json
 
 import torch
+from src.data.WSASL_rgb import WLASLLandmarksRGBDataset, collate_fn_rgb
+from src.models.SLT_multimodal import PoseRGBFusionModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import ROOT, DEVICE
-from src.data.WSASL_rgb import WLASLLandmarksRGBDataset, collate_fn_rgb
-from src.models.SLT_multimodal import PoseRGBFusionModel
+from config import DEVICE, ROOT
 from src.utils import FusionComponent
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
-VIDEO_DIR = os.path.join(ROOT, "datasets", "raw", "wlasl_videos")  # TODO: đổi cho đúng thư mục chứa <video_id>.mp4
+VIDEO_DIR = os.path.join(
+    ROOT, "datasets", "raw", "wlasl_videos"
+)  # TODO: đổi cho đúng thư mục chứa <video_id>.mp4
 OUTPUT_DIR = os.path.join(ROOT, "outputs", "models")
 PRETRAINED = os.path.join(OUTPUT_DIR, "stage1_pose_rgb_contrastive.pt")
 MODEL_NAME = "stage2_pose_rgb_fusion.pt"
@@ -39,9 +41,17 @@ def default_args():
     parser.add_argument("--data_path", default=DATA_PATH)
     parser.add_argument("--label_path", default=LABEL_DIR)
     parser.add_argument("--video_dir", default=VIDEO_DIR)
-    parser.add_argument("--pretrained", default=PRETRAINED, help="checkpoint Stage 1; để trống để train từ đầu")
+    parser.add_argument(
+        "--pretrained",
+        default=PRETRAINED,
+        help="checkpoint Stage 1; để trống để train từ đầu",
+    )
     parser.add_argument("--output", default=os.path.join(OUTPUT_DIR, MODEL_NAME))
-    parser.add_argument("--val_mode", default="test", help="tên split dùng để validate (<val_mode>.json)")
+    parser.add_argument(
+        "--val_mode",
+        default="test",
+        help="tên split dùng để validate (<val_mode>.json)",
+    )
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--lr", type=float, default=LR)
@@ -55,8 +65,13 @@ def default_args():
 def to_device(batch, device):
     """Batch: (landmarks (B,T,F), rgb (B,T,3,H,W), video_mask (B,T), labels (B,), video_ids)."""
     landmarks, rgb, video_mask, labels, video_ids = batch
-    return (landmarks.to(device, non_blocking=True), rgb.to(device, non_blocking=True),
-            video_mask.to(device, non_blocking=True), labels.to(device, non_blocking=True), video_ids)
+    return (
+        landmarks.to(device, non_blocking=True),
+        rgb.to(device, non_blocking=True),
+        video_mask.to(device, non_blocking=True),
+        labels.to(device, non_blocking=True),
+        video_ids,
+    )
 
 
 def set_train_mode(model, encoders_frozen):
@@ -80,7 +95,9 @@ def train_one_epoch(model, loader, optimizer, device, encoders_frozen):
         out = model(landmarks, rgb, labels=labels, video_mask=video_mask)
         loss = out["loss"]
         loss.backward()
-        torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(
+            [p for p in model.parameters() if p.requires_grad], max_norm=1.0
+        )
         optimizer.step()
 
         bs = labels.size(0)
@@ -88,7 +105,9 @@ def train_one_epoch(model, loader, optimizer, device, encoders_frozen):
         total_correct += (out["logits"].argmax(dim=-1) == labels).sum().item()
         total_samples += bs
 
-        pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{100 * total_correct / total_samples:.2f}%")
+        pbar.set_postfix(
+            loss=f"{loss.item():.4f}", acc=f"{100 * total_correct / total_samples:.2f}%"
+        )
 
     return total_loss / max(total_samples, 1), total_correct / max(total_samples, 1)
 
@@ -126,7 +145,8 @@ def build_model(args, num_classes):
         ckpt = torch.load(args.pretrained, map_location="cpu")
         model_kwargs = ckpt.get("model_kwargs", model_kwargs)
         assert model_kwargs["num_classes"] == num_classes, (
-            f"num_classes lệch: checkpoint={model_kwargs['num_classes']} vs dataset={num_classes}")
+            f"num_classes lệch: checkpoint={model_kwargs['num_classes']} vs dataset={num_classes}"
+        )
     elif args.pretrained:
         print(f"⚠ Không tìm thấy {args.pretrained} -> train từ đầu (không pretrain)")
 
@@ -136,8 +156,10 @@ def build_model(args, num_classes):
         print("Load Stage 1:", model.load_state_dict(ckpt["model"], strict=False))
         v = ckpt.get("val", {})
         if v:
-            print(f"  (Stage 1 val InfoNCE={v.get('loss', float('nan')):.4f}, "
-                  f"pose->rgb R@1={v.get('p2r_r1', float('nan')) * 100:.2f}%)")
+            print(
+                f"  (Stage 1 val InfoNCE={v.get('loss', float('nan')):.4f}, "
+                f"pose->rgb R@1={v.get('p2r_r1', float('nan')) * 100:.2f}%)"
+            )
 
     return model.to(DEVICE), model_kwargs
 
@@ -148,16 +170,40 @@ def main(args):
     fusion_component = FusionComponent()
 
     print("\nLoading datasets...")
-    ds_kwargs = dict(image_size=args.image_size, max_frames=args.max_frames)
-    train_dataset = WLASLLandmarksRGBDataset(args.data_path, args.label_path, args.video_dir, fusion_component,
-                                             mode="train", **ds_kwargs)
-    val_dataset = WLASLLandmarksRGBDataset(args.data_path, args.label_path, args.video_dir, fusion_component,
-                                           mode=args.val_mode, **ds_kwargs)
+    ds_kwargs = {"image_size": args.image_size, "max_frames": args.max_frames}
+    train_dataset = WLASLLandmarksRGBDataset(
+        args.data_path,
+        args.label_path,
+        args.video_dir,
+        fusion_component,
+        mode="train",
+        **ds_kwargs,
+    )
+    val_dataset = WLASLLandmarksRGBDataset(
+        args.data_path,
+        args.label_path,
+        args.video_dir,
+        fusion_component,
+        mode=args.val_mode,
+        **ds_kwargs,
+    )
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn_rgb,
-                              num_workers=0, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn_rgb,
-                            num_workers=0, pin_memory=True)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        collate_fn=collate_fn_rgb,
+        num_workers=0,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn_rgb,
+        num_workers=0,
+        pin_memory=True,
+    )
 
     with open(os.path.join(args.label_path, "gloss2idx.json"), "r") as f:
         num_classes = len(json.load(f))
@@ -166,16 +212,28 @@ def main(args):
     model, model_kwargs = build_model(args, num_classes)
 
     # --- param groups: encoder (lr nhỏ) vs fusion + classifier (lr chuẩn) ---
-    encoder_params = list(model.pose_encoder.parameters()) + list(model.rgb_encoder.parameters())
+    encoder_params = list(model.pose_encoder.parameters()) + list(
+        model.rgb_encoder.parameters()
+    )
     encoder_ids = {id(p) for p in encoder_params}
-    fusion_params = [p for n, p in model.named_parameters()
-                     if id(p) not in encoder_ids and not n.startswith(("pose_head", "rgb_head", "logit_scale"))]
+    fusion_params = [
+        p
+        for n, p in model.named_parameters()
+        if id(p) not in encoder_ids
+        and not n.startswith(("pose_head", "rgb_head", "logit_scale"))
+    ]
 
     optimizer = torch.optim.AdamW(
-        [{"params": fusion_params, "lr": args.lr}, {"params": encoder_params, "lr": args.lr * args.encoder_lr_scale}],
-        eps=1e-8, weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5,
-                                                           min_lr=1e-7)
+        [
+            {"params": fusion_params, "lr": args.lr},
+            {"params": encoder_params, "lr": args.lr * args.encoder_lr_scale},
+        ],
+        eps=1e-8,
+        weight_decay=WEIGHT_DECAY,
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7
+    )
 
     print(f"Total params    : {sum(p.numel() for p in model.parameters()):,}")
     print(f"Fusion params   : {sum(p.numel() for p in fusion_params):,}")
@@ -193,37 +251,56 @@ def main(args):
             print("\n>>> Unfreeze encoders (fine-tune toàn bộ)")
 
         print("\n" + "=" * 70)
-        print(f"Epoch {epoch + 1}/{args.epochs}  [{'FROZEN encoders' if encoders_frozen else 'FULL fine-tune'}]")
+        print(
+            f"Epoch {epoch + 1}/{args.epochs}  [{'FROZEN encoders' if encoders_frozen else 'FULL fine-tune'}]"
+        )
         print("=" * 70)
 
-        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, DEVICE, encoders_frozen)
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, optimizer, DEVICE, encoders_frozen
+        )
         val_loss, val_top1, val_topk = validate(model, val_loader, DEVICE, top_k=TOP_K)
 
         scheduler.step(val_loss)
         lrs = [g["lr"] for g in optimizer.param_groups]
 
-        print(f"\n"
-              f"Train loss      : {train_loss:.4f}\n"
-              f"Train top-1 acc : {train_acc * 100:.2f}%\n"
-              f"Val loss        : {val_loss:.4f}\n"
-              f"Val top-1 acc   : {val_top1 * 100:.2f}%\n"
-              f"Val top-{TOP_K} acc   : {val_topk * 100:.2f}%\n"
-              f"LR (fusion/enc) : {lrs[0]:.7f} / {lrs[1]:.7f}")
+        print(
+            f"\n"
+            f"Train loss      : {train_loss:.4f}\n"
+            f"Train top-1 acc : {train_acc * 100:.2f}%\n"
+            f"Val loss        : {val_loss:.4f}\n"
+            f"Val top-1 acc   : {val_top1 * 100:.2f}%\n"
+            f"Val top-{TOP_K} acc   : {val_topk * 100:.2f}%\n"
+            f"LR (fusion/enc) : {lrs[0]:.7f} / {lrs[1]:.7f}"
+        )
 
-        improved = val_top1 > best_acc or (val_top1 == best_acc and val_loss < best_loss)
+        improved = val_top1 > best_acc or (
+            val_top1 == best_acc and val_loss < best_loss
+        )
         if improved:
             no_improve = 0
             best_acc, best_loss = val_top1, val_loss
 
-            checkpoint = {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
-                          "scheduler": scheduler.state_dict(), "epoch": epoch, "val_loss": val_loss,
-                          "val_top1_acc": val_top1, "val_topk_acc": val_topk, "model_kwargs": model_kwargs}
+            checkpoint = {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "epoch": epoch,
+                "val_loss": val_loss,
+                "val_top1_acc": val_top1,
+                "val_topk_acc": val_topk,
+                "model_kwargs": model_kwargs,
+            }
             os.makedirs(os.path.dirname(args.output), exist_ok=True)
             torch.save(checkpoint, args.output)
-            print(f"\n✓ Saved best model  (top-1={best_acc * 100:.2f}%, loss={best_loss:.4f})")
+            print(
+                f"\n✓ Saved best model  (top-1={best_acc * 100:.2f}%, loss={best_loss:.4f})"
+            )
         else:
             no_improve += 1
-            print(f"\nNo improvement (best top-1={best_acc * 100:.2f}%), patience={no_improve}/{PATIENCE}")
+            print(
+                f"\nNo improvement (best top-1={best_acc * 100:.2f}%), patience={no_improve}/{PATIENCE}"
+            )
 
         if no_improve >= PATIENCE and not encoders_frozen:
             print(f"\n⚑ Early stopping at epoch {epoch + 1}")

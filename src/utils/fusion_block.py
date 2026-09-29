@@ -1,6 +1,6 @@
 import numpy as np
 
-from config import _REMOVE_POSE_IDX, _COORD_DIM
+from config import _COORD_DIM, _REMOVE_POSE_IDX
 
 _NOSE_IDX = 0
 _LEFT_SHOULDER_IDX = 11
@@ -10,7 +10,6 @@ _EPS = 1e-6
 
 
 class FusionComponent:
-
     def __init__(self):
         pass
 
@@ -28,17 +27,23 @@ class FusionComponent:
         right_present_mask = ~np.all(right == 0, axis=-1)
         pose_present_mask = ~np.all(pose == 0, axis=-1)
 
-        all_present_mask = np.concatenate([pose_present_mask, left_present_mask, right_present_mask], axis=1)  # (T, N)
+        all_present_mask = np.concatenate(
+            [pose_present_mask, left_present_mask, right_present_mask], axis=1
+        )  # (T, N)
 
-        valid_points = (all_points * all_present_mask[..., None])
+        valid_points = all_points * all_present_mask[..., None]
 
         valid_count = all_present_mask.sum(axis=1, keepdims=True)
 
-        average_point = (valid_points.sum(axis=1) / np.maximum(valid_count, 1))
+        average_point = valid_points.sum(axis=1) / np.maximum(valid_count, 1)
 
         average_point = average_point.reshape(T, 1, _COORD_DIM)
 
-        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
+        scale = np.linalg.norm(
+            pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
+            axis=-1,
+            keepdims=True,
+        )
 
         scale = np.where(scale > _EPS, scale, 1.0)
 
@@ -74,8 +79,11 @@ class FusionComponent:
         left_present_mask = ~np.all(left == 0, axis=-1)  # [T, 21]
         right_present_mask = ~np.all(right == 0, axis=-1)  # [T, 21]
 
-        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1,
-            keepdims=True)  # [T, 1]
+        scale = np.linalg.norm(
+            pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
+            axis=-1,
+            keepdims=True,
+        )  # [T, 1]
 
         scale = np.where(scale > _EPS, scale, 1.0)
         scale = scale[:, np.newaxis, :]  # [T, 1, 1]
@@ -137,7 +145,11 @@ class FusionComponent:
         right_present_mask = ~np.all(right == 0, axis=-1)
         pose_present_mask = ~np.all(pose == 0, axis=-1)
 
-        scale = np.linalg.norm(pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX], axis=-1, keepdims=True)
+        scale = np.linalg.norm(
+            pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
+            axis=-1,
+            keepdims=True,
+        )
 
         scale = np.where(scale > _EPS, scale, 1.0)
 
@@ -160,7 +172,9 @@ class FusionComponent:
 
         return fused_flat
 
-    def fuse_follow_hand(self, pose_feature, left_feature, right_feature, use_pose=True):
+    def fuse_follow_hand(
+        self, pose_feature, left_feature, right_feature, use_pose=True
+    ):
         T = left_feature.shape[0]
 
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
@@ -169,7 +183,9 @@ class FusionComponent:
         left_wrist = left[:, 0:1, :].copy()
         right_wrist = right[:, 0:1, :].copy()
 
-        scale = np.linalg.norm(left_wrist[:, 0] - right_wrist[:, 0], axis=-1, keepdims=True)
+        scale = np.linalg.norm(
+            left_wrist[:, 0] - right_wrist[:, 0], axis=-1, keepdims=True
+        )
         scale = np.where(scale > _EPS, scale, 1.0)
         scale = scale[:, np.newaxis, :]
 
@@ -186,7 +202,9 @@ class FusionComponent:
         normalize_left_hand = normalize_left_hand / scale
         normalize_right_hand = normalize_right_hand / scale
 
-        fused_coords = np.concatenate([normalize_left_hand, normalize_right_hand], axis=1)
+        fused_coords = np.concatenate(
+            [normalize_left_hand, normalize_right_hand], axis=1
+        )
 
         fused_flat = fused_coords.reshape(T, -1)  # (T, D)
 
@@ -199,7 +217,7 @@ class FusionComponent:
 
         valid_count = present_mask.sum(axis=1, keepdims=True)
 
-        average_point = (hand_feature.sum(axis=1) / np.maximum(valid_count, 1))
+        average_point = hand_feature.sum(axis=1) / np.maximum(valid_count, 1)
         average_point = average_point.reshape(T, 1, _COORD_DIM)
 
         root = average_point
@@ -211,7 +229,6 @@ class FusionComponent:
         return normalize_hand_feature
 
     def normalize_by_wrist(self, hand_feature, wrist=None):
-        T = hand_feature.shape[0]
 
         if wrist is None:
             wrist = hand_feature[:, 0:1, :]
@@ -223,6 +240,6 @@ class FusionComponent:
 
         normalize_hand_feature = hand_feature - wrist
 
-        normalize_hand_feature = (normalize_hand_feature * valid_mask[..., None])
+        normalize_hand_feature = normalize_hand_feature * valid_mask[..., None]
 
         return normalize_hand_feature

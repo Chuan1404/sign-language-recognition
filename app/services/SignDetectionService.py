@@ -3,18 +3,32 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-import sys, torch
+import sys
+
 import numpy as np
+import torch
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import (_REMOVE_POSE_IDX, )
+from app.utils import (
+    detect_hand,
+    detect_pose,
+)
+from config import (
+    _REMOVE_POSE_IDX,
+)
 
-from app.utils import (detect_hand, detect_pose, )
 
 class SignDetectionService:
-
-    def __init__(self, hand_detection, pose_detection, fusion, model, pretrained_model, idx2gloss, ):
+    def __init__(
+        self,
+        hand_detection,
+        pose_detection,
+        fusion,
+        model,
+        pretrained_model,
+        idx2gloss,
+    ):
         self.hand_detection = hand_detection
         self.pose_detection = pose_detection
         self.fusion = fusion
@@ -38,9 +52,9 @@ class SignDetectionService:
         video_mask = torch.ones((1, T)).cuda()
 
         with torch.no_grad():
-            logits, loss = self.model(features, video_mask=video_mask)
+            logits, _loss = self.model(features, video_mask=video_mask)
 
-        top_probs, top_indices = torch.topk(logits, k=5, dim=-1)
+        _top_probs, top_indices = torch.topk(logits, k=5, dim=-1)
         output = torch.argmax(logits, dim=1).item()
         print([self.idx2gloss[idx.item()] for idx in top_indices[0]])
 
@@ -51,9 +65,17 @@ class SignDetectionService:
         return self.idx2gloss[output]
 
     def detect(self, rgb_frame, timestamp_ms):
-        hand_results = detect_hand(self.hand_detection, rgb_frame, timestamp_ms, )
+        hand_results = detect_hand(
+            self.hand_detection,
+            rgb_frame,
+            timestamp_ms,
+        )
 
-        pose_results = detect_pose(self.pose_detection, rgb_frame, timestamp_ms, )
+        pose_results = detect_pose(
+            self.pose_detection,
+            rgb_frame,
+            timestamp_ms,
+        )
 
         return hand_results, pose_results
 
@@ -61,9 +83,15 @@ class SignDetectionService:
         detection_hand_results, *_ = hand_results
         detection_pose_results, *_ = pose_results
 
-        rgb_frame = self.hand_detection.draw_landmarks_on_image(rgb_frame, detection_hand_results, )
+        rgb_frame = self.hand_detection.draw_landmarks_on_image(
+            rgb_frame,
+            detection_hand_results,
+        )
 
-        rgb_frame = self.pose_detection.draw_landmarks_on_image(rgb_frame, detection_pose_results,
-                                                                remove_pose_idx=_REMOVE_POSE_IDX, )
+        rgb_frame = self.pose_detection.draw_landmarks_on_image(
+            rgb_frame,
+            detection_pose_results,
+            remove_pose_idx=_REMOVE_POSE_IDX,
+        )
 
         return rgb_frame

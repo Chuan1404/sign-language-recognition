@@ -1,11 +1,12 @@
 import numpy as np
 
-from config import _N_POSE, _N_HAND, _COORD_DIM, _REMOVE_POSE_IDX
+from config import _COORD_DIM, _N_HAND, _N_POSE, _REMOVE_POSE_IDX
 
 NUM_JOINTS = _N_POSE + 2 * _N_HAND
 
 _POSE_LR_PAIRS_RAW = [
-    (11, 12), (13, 14),  # shoulder, elbow, wrist
+    (11, 12),
+    (13, 14),  # shoulder, elbow, wrist
 ]
 
 
@@ -41,7 +42,9 @@ def _build_swap_index():
 
     return swap
 
+
 _SWAP_IDX = _build_swap_index()
+
 
 class SkeletonAugmentor:
     def __init__(
@@ -78,8 +81,8 @@ class SkeletonAugmentor:
 
         # Feature layout: [position | shape | average] mỗi block = (N * _COORD_DIM)
         # Tổng flat_dim = num_blocks * N * C  →  xác định num_blocks
-        block_flat = NUM_JOINTS * _COORD_DIM          # 55 * 2 = 110
-        num_blocks  = flat_dim // block_flat           # 1 hoặc 3
+        block_flat = NUM_JOINTS * _COORD_DIM  # 55 * 2 = 110
+        num_blocks = flat_dim // block_flat  # 1 hoặc 3
         assert flat_dim % block_flat == 0, (
             f"flat_dim={flat_dim} không chia hết cho block_flat={block_flat}. "
             "Kiểm tra NUM_JOINTS/_COORD_DIM trong config."
@@ -106,7 +109,11 @@ class SkeletonAugmentor:
         blocks = self._scale(blocks)
 
         # ── Gaussian noise ──
-        if self.enable_noise and self.noise_std > 0 and self.rng.random() < self.noise_prob:
+        if (
+            self.enable_noise
+            and self.noise_std > 0
+            and self.rng.random() < self.noise_prob
+        ):
             blocks = self._add_noise(blocks, present_mask)
 
         # Zero-out các keypoint bị thiếu
@@ -134,9 +141,7 @@ class SkeletonAugmentor:
         if _COORD_DIM == 2:
             R = np.array([[cos, -sin], [sin, cos]], dtype=np.float32)
         elif _COORD_DIM == 3:
-            R = np.array(
-                [[cos, -sin, 0], [sin, cos, 0], [0, 0, 1]], dtype=np.float32
-            )
+            R = np.array([[cos, -sin, 0], [sin, cos, 0], [0, 0, 1]], dtype=np.float32)
         else:
             raise ValueError(f"Unsupported _COORD_DIM: {_COORD_DIM}")
 
@@ -158,7 +163,7 @@ class SkeletonAugmentor:
             return blocks, present_mask
 
         factor = self.rng.uniform(*self.speed_range)
-        new_T = max(2, int(round(T / factor)))
+        new_T = max(2, round(T / factor))
         if new_T == T:
             return blocks, present_mask
 
@@ -186,8 +191,12 @@ class SkeletonAugmentor:
 
     def _add_noise(self, blocks, present_mask):
         # blocks: (T, num_blocks, N, C), present_mask: (T, N)
-        noise = self.rng.normal(0.0, self.noise_std, size=blocks.shape).astype(np.float32)
-        mask = present_mask[:, None, :, None]  # (T, 1, N, 1) → broadcast với (T, B, N, C)
+        noise = self.rng.normal(0.0, self.noise_std, size=blocks.shape).astype(
+            np.float32
+        )
+        mask = present_mask[
+            :, None, :, None
+        ]  # (T, 1, N, 1) → broadcast với (T, B, N, C)
         return blocks + noise * mask
 
     def _drop_frames(self, coords_flat):
@@ -230,14 +239,16 @@ class AugmentedSkeletonDataset:
             raise IndexError(idx)
 
         stride = 1 + self.num_augmentations
-        base_idx = idx // stride   # which original sample
-        variant  = idx %  stride   # 0 = original, 1..num_augmentations = augmented
+        base_idx = idx // stride  # which original sample
+        variant = idx % stride  # 0 = original, 1..num_augmentations = augmented
 
-        feature, label = self.base_dataset[base_idx]
+        feature, label, _ = self.base_dataset[base_idx]
 
         if variant == 0:
             return np.array(feature, dtype=np.float32, copy=True), label
 
         augmentor = self._get_augmentor()
-        feature_aug = augmentor(feature)  # augmentor copies internally, doesn't touch original
+        feature_aug = augmentor(
+            feature
+        )  # augmentor copies internally, doesn't touch original
         return feature_aug, label

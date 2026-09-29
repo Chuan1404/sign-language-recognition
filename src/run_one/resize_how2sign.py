@@ -1,12 +1,12 @@
-
 import os
 
 from tqdm import tqdm
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import cv2
-from config import ROOT, HOW2SIGN_RAW_DATA
 import pandas as pd
+
+from config import HOW2SIGN_RAW_DATA, ROOT
 
 
 def center_zoom_resize(frame, zoom_factor=1.5, target_size=(320, 240)):
@@ -24,21 +24,15 @@ def center_zoom_resize(frame, zoom_factor=1.5, target_size=(320, 240)):
     x1 = (w - crop_w) // 2
     y1 = (h - crop_h) // 2
 
-    cropped = frame[y1:y1 + crop_h, x1:x1 + crop_w]
+    cropped = frame[y1 : y1 + crop_h, x1 : x1 + crop_w]
 
     # resize to target
-    resized = cv2.resize(
-        cropped,
-        target_size,
-        interpolation=cv2.INTER_AREA
-    )
+    resized = cv2.resize(cropped, target_size, interpolation=cv2.INTER_AREA)
 
     return resized
 
 
-def process_video(input_path, output_path,
-                  zoom_factor=1.5,
-                  target_size=(320, 240)):
+def process_video(input_path, output_path, zoom_factor=1.5, target_size=(320, 240)):
 
     cap = cv2.VideoCapture(input_path)
 
@@ -46,14 +40,9 @@ def process_video(input_path, output_path,
     if fps is None or fps <= 0:
         fps = 25.0
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
-    out = cv2.VideoWriter(
-        output_path,
-        fourcc,
-        fps,
-        target_size
-    )
+    out = cv2.VideoWriter(output_path, fourcc, fps, target_size)
 
     frame_index = 0
 
@@ -68,9 +57,7 @@ def process_video(input_path, output_path,
 
         # center zoom + resize
         frame = center_zoom_resize(
-            frame,
-            zoom_factor=zoom_factor,
-            target_size=target_size
+            frame, zoom_factor=zoom_factor, target_size=target_size
         )
 
         # back to BGR for saving with OpenCV
@@ -87,7 +74,6 @@ def process_video(input_path, output_path,
 
 
 if __name__ == "__main__":
-
     SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "how2sign_resized")
     os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -110,8 +96,5 @@ if __name__ == "__main__":
             fps = 25.0
 
         process_video(
-            video_path,
-            video_output_path,
-            zoom_factor=1.5,
-            target_size=(320, 240)
+            video_path, video_output_path, zoom_factor=1.5, target_size=(320, 240)
         )

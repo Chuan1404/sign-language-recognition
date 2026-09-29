@@ -1,4 +1,6 @@
-import os, json
+import json
+import os
+
 
 class Vocabulary:
     def __init__(self, label_path):
@@ -9,4 +11,3 @@ class Vocabulary:
         with open(os.path.join(label_path), "r") as f:
             self.label2idx = json.load(f)
             self.idx2label = {v: k for k, v in self.label2idx.items()}
-

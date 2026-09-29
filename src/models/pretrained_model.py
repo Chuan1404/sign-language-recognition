@@ -1,5 +1,6 @@
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import torch
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+
 from config import DEVICE
 
 
@@ -9,9 +10,9 @@ class GPTPretrainedModel:
         self.model = None
 
     def load(self, model_name):
-        if model_name == 'gpt2':
-            self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-            self.model = GPT2LMHeadModel.from_pretrained('gpt2')
+        if model_name == "gpt2":
+            self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+            self.model = GPT2LMHeadModel.from_pretrained("gpt2")
         else:
             raise ValueError(f"Unsupported model_name: {model_name}")
         self.model.to(DEVICE)

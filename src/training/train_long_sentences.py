@@ -1,35 +1,35 @@
 import os
+
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import random
-from src.data.hand_landmarks import HandLandmarksDataset
-import torch
-from tqdm import tqdm
-from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer
-from torch.utils.data import DataLoader, Subset
 from functools import partial
 
-from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
+import torch
+from nltk.translate.bleu_score import SmoothingFunction, corpus_bleu
 from rouge_score import rouge_scorer
+from src.data.hand_landmarks import HandLandmarksDataset
+from torch.nn.utils.rnn import pad_sequence
+from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
+from transformers import AutoTokenizer
 
-from src.utils import FusionComponent
-from src.models.SLT_model import SignLanguageTranslatorV2
 from config import ROOT
+from src.models.SLT_model import SignLanguageTranslatorV2
+from src.utils import FusionComponent
 
-
-DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
-BATCH_SIZE    = 8
-EPOCHS        = 100
-LR_NEW        = 1e-4
-LR_MT5        = 2e-5
-PATIENCE      = 15
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+BATCH_SIZE = 8
+EPOCHS = 100
+LR_NEW = 1e-4
+LR_MT5 = 2e-5
+PATIENCE = 15
 WARMUP_EPOCHS = 5
-VAL_RATIO     = 0.1
-TEST_RATIO    = 0.1
-SEED          = 42     # for reproducible shuffling/splitting
-MAX_TEXT_LEN  = 128     # sentences are much longer than a single gloss
+VAL_RATIO = 0.1
+TEST_RATIO = 0.1
+SEED = 42  # for reproducible shuffling/splitting
+MAX_TEXT_LEN = 128  # sentences are much longer than a single gloss
 
 # --- Generation-based validation (BLEU/ROUGE) --------------------------------
 # Computing BLEU/ROUGE requires actually generating (model.generate()),
@@ -45,16 +45,16 @@ MAX_TEXT_LEN  = 128     # sentences are much longer than a single gloss
 #   - GENERATE_EVERY_N_EPOCHS: only run generation-based validation every
 #     N epochs; val_loss (cheap) is still computed and used for
 #     early-stopping/scheduler.step() every epoch regardless.
-GENERATE_NUM_BEAMS      = 1
+GENERATE_NUM_BEAMS = 1
 GENERATE_EVERY_N_EPOCHS = 1
-GENERATE_MAX_LENGTH     = 64
+GENERATE_MAX_LENGTH = 64
 
 print(DEVICE)
 
 
-FEATURE_DIR     = os.path.join(ROOT, "datasets", "processed", "full_body_how2sign")
+FEATURE_DIR = os.path.join(ROOT, "datasets", "processed", "full_body_how2sign")
 ANNOTATION_PATH = os.path.join(ROOT, "datasets", "annotations", "how2sign_flat.json")
-SAVE_DIR        = os.path.join(ROOT, "outputs", "models")
+SAVE_DIR = os.path.join(ROOT, "outputs", "models")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 fusion_component = FusionComponent()
@@ -78,14 +78,15 @@ def shuffled_split(n, val_ratio=0.1, test_ratio=0.1, seed=42):
     indices = list(range(n))
     rng.shuffle(indices)
 
-    n_val  = int(n * val_ratio)
+    n_val = int(n * val_ratio)
     n_test = int(n * test_ratio)
 
-    val_indices   = indices[:n_val]
-    test_indices  = indices[n_val:n_val + n_test]
-    train_indices = indices[n_val + n_test:]
+    val_indices = indices[:n_val]
+    test_indices = indices[n_val : n_val + n_test]
+    train_indices = indices[n_val + n_test :]
 
     return train_indices, val_indices, test_indices
+
 
 def collate_fn_infer(batch, tokenizer):
     """Like collate_fn, but keeps text padded with pad_token_id (NOT -100)
@@ -100,9 +101,7 @@ def collate_fn_infer(batch, tokenizer):
     real_lengths = [f.shape[0] for f in features]
 
     features = pad_sequence(features, batch_first=True)
-    texts    = pad_sequence(
-        texts, batch_first=True, padding_value=tokenizer.pad_token_id
-    )
+    texts = pad_sequence(texts, batch_first=True, padding_value=tokenizer.pad_token_id)
 
     video_mask = (
         torch.arange(features.shape[1]).unsqueeze(0)
@@ -157,9 +156,7 @@ def collate_fn(batch, tokenizer):
     real_lengths = [f.shape[0] for f in features]
 
     features = pad_sequence(features, batch_first=True)
-    texts    = pad_sequence(
-        texts, batch_first=True, padding_value=tokenizer.pad_token_id
-    )
+    texts = pad_sequence(texts, batch_first=True, padding_value=tokenizer.pad_token_id)
 
     video_mask = (
         torch.arange(features.shape[1]).unsqueeze(0)
@@ -186,18 +183,13 @@ def train_one_epoch(model, loader, optimizer):
     pbar = tqdm(loader, desc="Training")
 
     for features, text_ids, video_mask in pbar:
-
-        features   = features.to(DEVICE, non_blocking=True)
-        text_ids   = text_ids.to(DEVICE, non_blocking=True)
+        features = features.to(DEVICE, non_blocking=True)
+        text_ids = text_ids.to(DEVICE, non_blocking=True)
         video_mask = video_mask.to(DEVICE, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
-        outputs = model(
-            features,
-            text_ids=text_ids,
-            video_mask=video_mask
-        )
+        outputs = model(features, text_ids=text_ids, video_mask=video_mask)
 
         loss = outputs.loss
         loss.backward()
@@ -211,8 +203,7 @@ def train_one_epoch(model, loader, optimizer):
     return total_loss / len(loader)
 
 
-def validate(model, loader, tokenizer, run_generation=True,
-             num_beams=1, max_length=64):
+def validate(model, loader, tokenizer, run_generation=True, num_beams=1, max_length=64):
     """
     loader must be built with collate_fn_infer (texts padded with
     pad_token_id, NOT -100) — this function derives the -100 version
@@ -231,8 +222,8 @@ def validate(model, loader, tokenizer, run_generation=True,
 
     with torch.no_grad():
         for features, text_ids, video_mask in loader:
-            features   = features.to(DEVICE, non_blocking=True)
-            text_ids   = text_ids.to(DEVICE, non_blocking=True)
+            features = features.to(DEVICE, non_blocking=True)
+            text_ids = text_ids.to(DEVICE, non_blocking=True)
             video_mask = video_mask.to(DEVICE, non_blocking=True)
 
             # -100 version for the loss — text_ids here is padded with
@@ -241,11 +232,7 @@ def validate(model, loader, tokenizer, run_generation=True,
             labels = text_ids.clone()
             labels[labels == tokenizer.pad_token_id] = -100
 
-            outputs = model(
-                features,
-                text_ids=labels,
-                video_mask=video_mask
-            )
+            outputs = model(features, text_ids=labels, video_mask=video_mask)
             total_loss += outputs.loss.item()
 
             if run_generation:
@@ -253,10 +240,12 @@ def validate(model, loader, tokenizer, run_generation=True,
                     features,
                     video_mask=video_mask,
                     max_length=max_length,
-                    num_beams=num_beams
+                    num_beams=num_beams,
                 )
-                pred_texts = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-                gt_texts   = tokenizer.batch_decode(text_ids, skip_special_tokens=True)
+                pred_texts = tokenizer.batch_decode(
+                    generated_ids, skip_special_tokens=True
+                )
+                gt_texts = tokenizer.batch_decode(text_ids, skip_special_tokens=True)
 
                 all_refs.extend(t.strip() for t in gt_texts)
                 all_hyps.extend(t.strip() for t in pred_texts)
@@ -266,7 +255,7 @@ def validate(model, loader, tokenizer, run_generation=True,
     if not run_generation:
         return avg_loss, None, None
 
-    bleu_scores  = compute_bleu(all_refs, all_hyps)
+    bleu_scores = compute_bleu(all_refs, all_hyps)
     rouge_scores = compute_rouge(all_refs, all_hyps)
 
     return avg_loss, bleu_scores, rouge_scores
@@ -277,7 +266,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained("google/mt5-small", use_fast=False)
 
     dataset = HandLandmarksDataset(
-        FEATURE_DIR, tokenizer, fusion_component, max_samples=None)
+        FEATURE_DIR, tokenizer, fusion_component, max_samples=None
+    )
 
     # test_indices are intentionally unused here — they're excluded from
     # both train and val so test_how2sign.py (which recomputes this same
@@ -288,50 +278,55 @@ def main():
     )
 
     train_dataset = Subset(dataset, train_indices)
-    val_dataset   = Subset(dataset, val_indices)
+    val_dataset = Subset(dataset, val_indices)
 
-    print(f"Dataset — train: {len(train_dataset)}, val: {len(val_dataset)}, "
-          f"test (held out, not used here): {len(test_indices)}")
+    print(
+        f"Dataset — train: {len(train_dataset)}, val: {len(val_dataset)}, "
+        f"test (held out, not used here): {len(test_indices)}"
+    )
 
     train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
         collate_fn=partial(collate_fn, tokenizer=tokenizer),
-        num_workers=2, pin_memory=True
+        num_workers=2,
+        pin_memory=True,
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False,
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
         collate_fn=partial(collate_fn_infer, tokenizer=tokenizer),
-        num_workers=2, pin_memory=True
+        num_workers=2,
+        pin_memory=True,
     )
 
     feature, _ = train_dataset[0]
 
-
-    model_kwargs = dict(
-        input_dim=feature.shape[-1],
-        hidden_dim=256,
-        num_encoder_layers=6,
-        nhead=8,
-        dim_feedforward=2048,
-        dropout=0.2,
-        max_seq_len=5000,
-        pretrained_model="google/mt5-small"
-    )
+    model_kwargs = {
+        "input_dim": feature.shape[-1],
+        "hidden_dim": 256,
+        "num_encoder_layers": 6,
+        "nhead": 8,
+        "dim_feedforward": 2048,
+        "dropout": 0.2,
+        "max_seq_len": 5000,
+        "pretrained_model": "google/mt5-small",
+    }
 
     model = SignLanguageTranslatorV2(**model_kwargs).to(DEVICE)
 
-    total_params     = sum(p.numel() for p in model.parameters())
+    total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total params    : {total_params:,}")
     print(f"Trainable params: {trainable_params:,}")
 
     param_groups = model.get_optimizer_param_groups(
-        lr_new_modules=LR_NEW,
-        lr_mt5=LR_MT5
+        lr_new_modules=LR_NEW, lr_mt5=LR_MT5
     )
     optimizer = torch.optim.AdamW(
-        param_groups,
-        betas=(0.9, 0.98), eps=1e-8, weight_decay=0.01
+        param_groups, betas=(0.9, 0.98), eps=1e-8, weight_decay=0.01
     )
     base_lrs = [g["lr"] for g in optimizer.param_groups]
 
@@ -339,7 +334,7 @@ def main():
         optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6
     )
 
-    best_loss  = float("inf")
+    best_loss = float("inf")
     no_improve = 0
 
     for epoch in range(EPOCHS):
@@ -353,12 +348,14 @@ def main():
 
         train_loss = train_one_epoch(model, train_loader, optimizer)
 
-        run_generation = (epoch % GENERATE_EVERY_N_EPOCHS == 0)
+        run_generation = epoch % GENERATE_EVERY_N_EPOCHS == 0
         val_loss, bleu_scores, rouge_scores = validate(
-            model, val_loader, tokenizer,
+            model,
+            val_loader,
+            tokenizer,
             run_generation=run_generation,
             num_beams=GENERATE_NUM_BEAMS,
-            max_length=GENERATE_MAX_LENGTH
+            max_length=GENERATE_MAX_LENGTH,
         )
 
         if epoch >= WARMUP_EPOCHS:
@@ -368,40 +365,48 @@ def main():
         print(f"Val   loss : {val_loss:.4f}")
 
         if bleu_scores is not None:
-            print(f"Val   BLEU-1/2/3/4 : "
-                  f"{bleu_scores['bleu1']*100:.2f} / {bleu_scores['bleu2']*100:.2f} / "
-                  f"{bleu_scores['bleu3']*100:.2f} / {bleu_scores['bleu4']*100:.2f}  "
-                  f"(greedy, num_beams={GENERATE_NUM_BEAMS} — free-running, not teacher-forced)")
-            print(f"Val   ROUGE-1/2/L  : "
-                  f"{rouge_scores['rouge1']*100:.2f} / {rouge_scores['rouge2']*100:.2f} / "
-                  f"{rouge_scores['rougeL']*100:.2f}")
+            print(
+                f"Val   BLEU-1/2/3/4 : "
+                f"{bleu_scores['bleu1'] * 100:.2f} / {bleu_scores['bleu2'] * 100:.2f} / "
+                f"{bleu_scores['bleu3'] * 100:.2f} / {bleu_scores['bleu4'] * 100:.2f}  "
+                f"(greedy, num_beams={GENERATE_NUM_BEAMS} — free-running, not teacher-forced)"
+            )
+            print(
+                f"Val   ROUGE-1/2/L  : "
+                f"{rouge_scores['rouge1'] * 100:.2f} / {rouge_scores['rouge2'] * 100:.2f} / "
+                f"{rouge_scores['rougeL'] * 100:.2f}"
+            )
         else:
-            print(f"Val   BLEU/ROUGE   : skipped this epoch "
-                  f"(GENERATE_EVERY_N_EPOCHS={GENERATE_EVERY_N_EPOCHS})")
+            print(
+                f"Val   BLEU/ROUGE   : skipped this epoch "
+                f"(GENERATE_EVERY_N_EPOCHS={GENERATE_EVERY_N_EPOCHS})"
+            )
 
         if val_loss < best_loss:
-            best_loss  = val_loss
+            best_loss = val_loss
             no_improve = 0
             checkpoint = {
-                "model":        model.state_dict(),
-                "optimizer":    optimizer.state_dict(),
-                "scheduler":    scheduler.state_dict(),
-                "epoch":        epoch,
-                "val_loss":     val_loss,
-                "model_kwargs": model_kwargs
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "epoch": epoch,
+                "val_loss": val_loss,
+                "model_kwargs": model_kwargs,
             }
             if bleu_scores is not None:
-                checkpoint["val_bleu"]  = bleu_scores
+                checkpoint["val_bleu"] = bleu_scores
                 checkpoint["val_rouge"] = rouge_scores
 
             torch.save(checkpoint, os.path.join(SAVE_DIR, "how2sign_v2_best.pt"))
             print(f"✓ Saved best model  (val_loss={best_loss:.4f})")
         else:
             no_improve += 1
-            print(f"  No improvement (best={best_loss:.4f}, patience={no_improve}/{PATIENCE})")
+            print(
+                f"  No improvement (best={best_loss:.4f}, patience={no_improve}/{PATIENCE})"
+            )
 
             if no_improve >= PATIENCE:
-                print(f"\n⚑ Early stopping at epoch {epoch+1}")
+                print(f"\n⚑ Early stopping at epoch {epoch + 1}")
                 break
 
 

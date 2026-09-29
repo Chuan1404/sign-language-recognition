@@ -1,10 +1,10 @@
 import os.path
 
+import cv2
 import mediapipe as mp
+import numpy as np
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-import numpy as np
-import cv2
 
 from config import ROOT
 
@@ -23,40 +23,38 @@ FINGERS = {
     "Middle": [9, 10, 11, 12],
     "Ring": [13, 14, 15, 16],
     "Pinky": [17, 18, 19, 20],
-    "Wrist": [0]
+    "Wrist": [0],
 }
 
 FINGER_COLORS = {
-    "Thumb": (0, 0, 255),   # Red
-    "Index": (0, 255, 0),   # Green
+    "Thumb": (0, 0, 255),  # Red
+    "Index": (0, 255, 0),  # Green
     "Middle": (255, 0, 0),  # Blue
     "Ring": (0, 255, 255),  # Yellow
     "Pinky": (255, 0, 255),  # Magenta
-    "Wrist": (0, 0, 0)
+    "Wrist": (0, 0, 0),
 }
 
 MODEL_PATH = os.path.join(ROOT, "pretrained", "hand_landmarker.task")
 
+
 class HandDetection:
     def __init__(self, min_hand_detection_confidence=0.3):
-        self.prev_hand_crops = hand_crops = {
-            "Left": None,
-            "Right": None
-        }
+        self.prev_hand_crops = {"Left": None, "Right": None}
 
         base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
 
         # Video
         video_options = vision.HandLandmarkerOptions(
             base_options=base_options,
-            min_hand_detection_confidence = min_hand_detection_confidence,
+            min_hand_detection_confidence=min_hand_detection_confidence,
             num_hands=2,
-            running_mode=vision.RunningMode.VIDEO)
+            running_mode=vision.RunningMode.VIDEO,
+        )
         self.video_detector = vision.HandLandmarker.create_from_options(video_options)
 
         # Image
-        image_options = vision.HandLandmarkerOptions(
-            base_options=base_options)
+        image_options = vision.HandLandmarkerOptions(base_options=base_options)
         self.image_detector = vision.HandLandmarker.create_from_options(image_options)
 
     def detect_image(self, frame):
@@ -82,7 +80,6 @@ class HandDetection:
             return hand_crops
 
         for idx, hand_landmarks in enumerate(detection_result.hand_landmarks):
-
             hand_label = detection_result.handedness[idx][0].category_name
 
             x_list = []
@@ -117,7 +114,6 @@ class HandDetection:
 
     def draw_landmarks_on_image(self, rgb_image, detection_result):
         hand_landmarks_list = detection_result.hand_landmarks
-        handedness_list = detection_result.handedness
         annotated_image = np.copy(rgb_image)
         height, width, _ = annotated_image.shape
 
@@ -132,7 +128,6 @@ class HandDetection:
                 (int(lm.x * width), int(lm.y * height)) for lm in hand_landmarks
             ]
 
-
             for finger_name, indices in FINGERS.items():
                 color = FINGER_COLORS[finger_name]
 
@@ -144,7 +139,7 @@ class HandDetection:
                         landmark_points[start_idx],
                         landmark_points[end_idx],
                         color,
-                        thickness=thickness
+                        thickness=thickness,
                     )
 
                     start_idx = indices[i]
@@ -163,4 +158,3 @@ class HandDetection:
             self.video_detector.close()
         if self.image_detector:
             self.image_detector.close()
-

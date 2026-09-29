@@ -1,5 +1,5 @@
 import pandas as pd
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 
 
 class How2SignDataset(Dataset):
@@ -21,7 +21,6 @@ class How2SignDataset(Dataset):
         # Name: 1672, dtype: object
         # Output shape: tensor([22514, 1672])
 
-        video_id = row["VIDEO_ID"]
         video_name = row["SENTENCE_NAME"]
         sentence = row["SENTENCE"]
 

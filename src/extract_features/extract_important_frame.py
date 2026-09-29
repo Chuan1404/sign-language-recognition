@@ -1,19 +1,33 @@
 import os
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import json
+
 import cv2
 import numpy as np
 
-JSON_PATH_TRAIN = "outputs/models/wlasl100_train_frame_importance.json"
-JSON_PATH_VAL = "outputs/models/wlasl100_val_frame_importance.json"
-VIDEO_DIR = "datasets/raw/WLASL/videos"  # Thư mục chứa video gốc
-OUTPUT_DIR = "outputs/extracted_frames"
+from config import ROOT
+
+JSON_PATH_TRAIN = os.path.join(
+    ROOT, "outputs", "models", "wlasl100_train_frame_importance.json"
+)
+JSON_PATH_VAL = os.path.join(
+    ROOT, "outputs", "models", "wlasl100_val_frame_importance.json"
+)
+VIDEO_DIR = os.path.join(ROOT, "datasets", "raw", "WLASL", "videos")
+OUTPUT_DIR = os.path.join(ROOT, "outputs", "extracted_frames")
 TOP_K = 5
+
+for filename in os.listdir(OUTPUT_DIR):
+    path = os.path.join(OUTPUT_DIR, filename)
+
+    if os.path.isfile(path):
+        os.remove(path)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# =====================================================================
-# SCRIPT
-# =====================================================================
+
 def extract_frames():
     importance_data = {}
     if os.path.exists(JSON_PATH_TRAIN):
@@ -72,6 +86,7 @@ def extract_frames():
 
         cap.release()
         print(f"✓ Extracted {extracted} frames for {video_id}")
+
 
 if __name__ == "__main__":
     extract_frames()

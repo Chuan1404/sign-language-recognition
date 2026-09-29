@@ -3,22 +3,63 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import json
+
 import cv2
 import numpy as np
 from tqdm import tqdm
 
-from src.utils.pose_detection import PoseDetection
-from src.utils.hand_detection import HandDetection
-from src.utils.face_detection import FaceDetection
 from config import ROOT, WLASL_RAW_DATA
+from src.utils.face_detection import FaceDetection
+from src.utils.hand_detection import HandDetection
+from src.utils.pose_detection import PoseDetection
 
 SAVE_DIR = os.path.join(ROOT, "datasets", "processed", "wlasl_features_0_6")
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 LABELS_PATH = os.path.join(ROOT, "datasets", "annotations", "wlasl_flat.json")
 
-LIPS = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 185, 40, 39, 37, 0, 267, 269, 270, 409, 78, 95, 88, 178, 87,
-    14, 317, 402, 318, 324, 308, 191, 80, 81, 82, 13, 312, 311, 310, 415]
+LIPS = [
+    61,
+    146,
+    91,
+    181,
+    84,
+    17,
+    314,
+    405,
+    321,
+    375,
+    291,
+    185,
+    40,
+    39,
+    37,
+    0,
+    267,
+    269,
+    270,
+    409,
+    78,
+    95,
+    88,
+    178,
+    87,
+    14,
+    317,
+    402,
+    318,
+    324,
+    308,
+    191,
+    80,
+    81,
+    82,
+    13,
+    312,
+    311,
+    310,
+    415,
+]
 
 with open(LABELS_PATH, "r", encoding="utf-8") as f:
     label_entries = json.load(f)
@@ -26,7 +67,6 @@ with open(LABELS_PATH, "r", encoding="utf-8") as f:
 print(f"Total instances: {len(label_entries)}")
 
 for entry in tqdm(label_entries, total=len(label_entries)):
-
     hand_detection = HandDetection(min_hand_detection_confidence=0.6)
     pose_detection = PoseDetection()
     face_detection = FaceDetection()
@@ -55,7 +95,6 @@ for entry in tqdm(label_entries, total=len(label_entries)):
     lips_features = []
 
     while True:
-
         success, frame = cap.read()
         if not success:
             break
@@ -81,15 +120,15 @@ for entry in tqdm(label_entries, total=len(label_entries)):
         hand_landmarks = detection_hand_results.hand_landmarks
 
         if hand_landmarks is not None and len(hand_landmarks) > 0:
-
             for i, hand_info in enumerate(handedness):
-
                 if i >= len(hand_landmarks):
                     continue
 
                 category = hand_info[0]
 
-                coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks[i]], dtype=np.float32)
+                coords = np.array(
+                    [[lm.x, lm.y, lm.z] for lm in hand_landmarks[i]], dtype=np.float32
+                )
 
                 coords = np.nan_to_num(coords)
 
@@ -109,10 +148,15 @@ for entry in tqdm(label_entries, total=len(label_entries)):
 
         pose_coords = np.zeros((33, 3), dtype=np.float32)
 
-        if (detection_pose_results.pose_landmarks is not None and len(detection_pose_results.pose_landmarks) > 0):
+        if (
+            detection_pose_results.pose_landmarks is not None
+            and len(detection_pose_results.pose_landmarks) > 0
+        ):
             pose_landmarks = detection_pose_results.pose_landmarks[0]
 
-            pose_coords = np.array([[lm.x, lm.y, lm.z] for lm in pose_landmarks], dtype=np.float32)
+            pose_coords = np.array(
+                [[lm.x, lm.y, lm.z] for lm in pose_landmarks], dtype=np.float32
+            )
 
             pose_coords = np.nan_to_num(pose_coords)
 
@@ -122,11 +166,16 @@ for entry in tqdm(label_entries, total=len(label_entries)):
 
         lip_coords = np.zeros((40, 3), dtype=np.float32)
 
-        if (detection_face_results.face_landmarks is not None and len(detection_face_results.face_landmarks) > 0):
+        if (
+            detection_face_results.face_landmarks is not None
+            and len(detection_face_results.face_landmarks) > 0
+        ):
             face_landmarks = detection_face_results.face_landmarks[0]
 
-            lip_coords = np.array([[lm.x, lm.y, lm.z] for idx in LIPS for lm in [face_landmarks[idx]]],
-                dtype=np.float32)
+            lip_coords = np.array(
+                [[lm.x, lm.y, lm.z] for idx in LIPS for lm in [face_landmarks[idx]]],
+                dtype=np.float32,
+            )
 
             lip_coords = np.nan_to_num(lip_coords)
 
@@ -189,9 +238,12 @@ for entry in tqdm(label_entries, total=len(label_entries)):
     with open(os.path.join(dir_name, "gloss.txt"), "w", encoding="utf-8") as f:
         f.write(gloss.strip())
 
-    print(f"Saved: {video_id} ({gloss}) | "
-          f"RH={right_hand_features.shape} "
-          f"LH={left_hand_features.shape} "
-          f"POSE={pose_features.shape}", f"LIPS={lips_features.shape}")
+    print(
+        f"Saved: {video_id} ({gloss}) | "
+        f"RH={right_hand_features.shape} "
+        f"LH={left_hand_features.shape} "
+        f"POSE={pose_features.shape}",
+        f"LIPS={lips_features.shape}",
+    )
 
 print("FINISH")

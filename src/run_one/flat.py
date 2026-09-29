@@ -1,23 +1,15 @@
-import os
 import json
+import os
 
 from config import ROOT
 
-NSLT_JSON_PATH = os.path.join(
-    ROOT, "datasets", "raw", "WLASL", "nslt_1000.json"
-)
+NSLT_JSON_PATH = os.path.join(ROOT, "datasets", "raw", "WLASL", "nslt_1000.json")
 
-WLASL_FULL_JSON_PATH = os.path.join(
-    ROOT, "datasets", "raw", "WLASL", "WLASL_v0_3.json"
-)
+WLASL_FULL_JSON_PATH = os.path.join(ROOT, "datasets", "raw", "WLASL", "WLASL_v0_3.json")
 
-MISSING_PATH = os.path.join(
-    ROOT, "datasets", "annotations", "missing.txt"
-)
+MISSING_PATH = os.path.join(ROOT, "datasets", "annotations", "missing.txt")
 
-SAVE_DIR = os.path.join(
-    ROOT, "datasets", "annotations", "WLASL1000"
-)
+SAVE_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL1000")
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -56,7 +48,6 @@ def flatten_nslt():
     all_glosses = set()
 
     for video_id, info in nslt_data.items():
-
         if video_id in missing_ids:
             skipped += 1
             continue
@@ -97,15 +88,9 @@ def flatten_nslt():
 
     gloss_list = sorted(all_glosses)
 
-    gloss2idx = {
-        gloss: idx
-        for idx, gloss in enumerate(gloss_list)
-    }
+    gloss2idx = {gloss: idx for idx, gloss in enumerate(gloss_list)}
 
-    idx2gloss = {
-        idx: gloss
-        for gloss, idx in gloss2idx.items()
-    }
+    idx2gloss = {idx: gloss for gloss, idx in gloss2idx.items()}
 
     for sample in train_entries + test_entries:
         sample["label_id"] = gloss2idx[sample["gloss"]]

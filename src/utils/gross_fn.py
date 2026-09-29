@@ -1,4 +1,6 @@
-import os, json
+import json
+import os
+
 
 def build_gloss_list(label_dir, video_dir):
     all_json = []
@@ -14,7 +16,9 @@ def build_gloss_list(label_dir, video_dir):
     for item in all_json:
         g = item["gloss"]
         vid = item["video_id"]
-        if g not in gloss_video and os.path.exists(os.path.join(video_dir, f"{vid}.mp4")):
+        if g not in gloss_video and os.path.exists(
+            os.path.join(video_dir, f"{vid}.mp4")
+        ):
             gloss_video[g] = vid
 
     return [{"gloss": g, "video_id": v} for g, v in sorted(gloss_video.items())]

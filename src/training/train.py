@@ -5,8 +5,6 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
 
-
-
 def collate_fn(batch):
     features, labels, video_ids = [], [], []
     for feature, label, video_id in batch:
@@ -248,8 +246,91 @@ def validate_selector(model, loader, device, top_k=2):
 
     return (val_loss, top1_acc, topk_acc)
 
-
 def train_rgb_one_epoch(model, loader, optimizer, device):
+    model.train()
+
+    total_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    pbar = tqdm(loader, desc="Training")
+
+    for batch in pbar:
+        landmarks, rgb, feature_mask, rgb_mask, labels, _video_id = batch
+
+        landmarks = landmarks.to(device, non_blocking=True)
+        rgb = rgb.to(device, non_blocking=True)
+        feature_mask = feature_mask.to(device, non_blocking=True)
+        rgb_mask = rgb_mask.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        out = model.forward(landmarks, rgb, labels=labels,
+                            feature_mask=feature_mask, rgb_mask=rgb_mask)
+
+        out["loss"].backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+
+        bs = labels.size(0)
+        total_loss += out["loss"].item() * bs
+        total_correct += (out["logits"].argmax(dim=-1) == labels).sum().item()
+        total_samples += bs
+
+        acc = total_correct / max(total_samples, 1)
+        pbar.set_postfix(loss=f"{out['loss'].item():.4f}", acc=f"{acc * 100:.2f}%")
+
+    return {
+        "loss": total_loss / max(total_samples, 1),
+        "acc": total_correct / max(total_samples, 1),
+    }
+
+
+
+@torch.no_grad()
+def validate_rgb(model, loader, device, top_k=5):
+    model.eval()
+
+    total_loss = 0.0
+    total_correct_top1 = 0
+    total_correct_topk = 0
+    total_samples = 0
+
+    for batch in loader:
+        landmarks, rgb, feature_mask, rgb_mask, labels, _video_id = batch
+
+        landmarks = landmarks.to(device, non_blocking=True)
+        rgb = rgb.to(device, non_blocking=True)
+        feature_mask = feature_mask.to(device, non_blocking=True)
+        rgb_mask = rgb_mask.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        out = model.forward(landmarks, rgb, labels=labels,
+                            feature_mask=feature_mask, rgb_mask=rgb_mask)
+
+        logits = out["logits"]
+        bs = labels.size(0)
+        total_loss += out["loss"].item() * bs
+        total_samples += bs
+
+        # Top-1
+        total_correct_top1 += (logits.argmax(dim=1) == labels).sum().item()
+
+        # Top-K
+        k = min(top_k, logits.size(1))
+        topk_idx = torch.topk(logits, k=k, dim=1).indices
+        total_correct_topk += (topk_idx == labels.unsqueeze(1)).any(dim=1).sum().item()
+
+    n = max(total_samples, 1)
+    return {
+        "loss": total_loss / n,
+        "top1": total_correct_top1 / n,
+        "topk": total_correct_topk / n,
+    }
+
+
+def pretrain_rgb_one_epoch(model, loader, optimizer, device):
     model.train()
 
     total_loss, n_batches = 0.0, 0
@@ -284,7 +365,7 @@ def train_rgb_one_epoch(model, loader, optimizer, device):
 
 
 @torch.no_grad()
-def validate_rgb(model, loader, device, top_k=5):
+def prevalidate_rgb(model, loader, device, top_k=5):
     model.eval()
 
     all_pose, all_rgb = [], []

@@ -1,36 +1,31 @@
 import os
 
+
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
 import json
+from pipeline_config import SELECTED_RGB_DIR
 
 import torch
-from src.data.WSASL_rgb import WLASLLandmarksRGBDataset, collate_fn_rgb
-from src.models.SLT_multimodal import PoseRGBFusionModel
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from config import DEVICE, ROOT
+from src.data.WSASL_raw import WLASLLandmarksRGBDataset
+from src.models.SLT_model import PoseRGBFusionModel
+from src.training.train import collate_fn_rgb, train_rgb_one_epoch, validate_rgb
 from src.utils import FusionComponent
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
-VIDEO_DIR = os.path.join(
-    ROOT, "datasets", "raw", "wlasl_videos"
-)  # TODO: đổi cho đúng thư mục chứa <video_id>.mp4
 OUTPUT_DIR = os.path.join(ROOT, "outputs", "models")
-PRETRAINED = os.path.join(OUTPUT_DIR, "stage1_pose_rgb_contrastive.pt")
-MODEL_NAME = "stage2_pose_rgb_fusion.pt"
+MODEL_NAME = "stage2_pose_rgb_contrastive.pt"
+STAGE1_CKPT = os.path.join(ROOT, "outputs", "models", "stage1_pose_rgb_contrastive.pt")
 
-LR = 1e-4  # lr cho phần fusion + classifier
-ENCODER_LR_SCALE = 0.1  # lr của encoder sau khi unfreeze = LR * scale
-FREEZE_EPOCHS = 5  # số epoch đầu freeze encoder, chỉ train fusion + classifier
-BATCH_SIZE = 16
+LR = 1e-4
+BATCH_SIZE = 8
 EPOCHS = 100
-IMAGE_SIZE = 112
-MAX_FRAMES = 64  # phải giống lúc pretrain
 TOP_K = 5
 PATIENCE = 15
 WEIGHT_DECAY = 0.01
@@ -39,13 +34,8 @@ WEIGHT_DECAY = 0.01
 def default_args():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--data_path", default=DATA_PATH)
+    parser.add_argument("--rgb_dir", default=SELECTED_RGB_DIR)
     parser.add_argument("--label_path", default=LABEL_DIR)
-    parser.add_argument("--video_dir", default=VIDEO_DIR)
-    parser.add_argument(
-        "--pretrained",
-        default=PRETRAINED,
-        help="checkpoint Stage 1; để trống để train từ đầu",
-    )
     parser.add_argument("--output", default=os.path.join(OUTPUT_DIR, MODEL_NAME))
     parser.add_argument(
         "--val_mode",
@@ -55,137 +45,27 @@ def default_args():
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--lr", type=float, default=LR)
-    parser.add_argument("--encoder_lr_scale", type=float, default=ENCODER_LR_SCALE)
-    parser.add_argument("--freeze_epochs", type=int, default=FREEZE_EPOCHS)
-    parser.add_argument("--image_size", type=int, default=IMAGE_SIZE)
-    parser.add_argument("--max_frames", type=int, default=MAX_FRAMES)
-    return parser
-
-
-def to_device(batch, device):
-    """Batch: (landmarks (B,T,F), rgb (B,T,3,H,W), video_mask (B,T), labels (B,), video_ids)."""
-    landmarks, rgb, video_mask, labels, video_ids = batch
-    return (
-        landmarks.to(device, non_blocking=True),
-        rgb.to(device, non_blocking=True),
-        video_mask.to(device, non_blocking=True),
-        labels.to(device, non_blocking=True),
-        video_ids,
+    parser.add_argument("--top_k", type=int, default=TOP_K)
+    parser.add_argument("--patience", type=int, default=PATIENCE)
+    parser.add_argument(
+        "--stage1_ckpt",
+        default=STAGE1_CKPT,
+        help="Path to stage-1 pretrained checkpoint (.pt). Set to '' to skip.",
     )
-
-
-def set_train_mode(model, encoders_frozen):
-    """Khi encoder đang freeze thì để eval luôn (tắt dropout, giữ nguyên BatchNorm stats của CNN)."""
-    model.train()
-    if encoders_frozen:
-        model.pose_encoder.eval()
-        model.rgb_encoder.eval()
-
-
-def train_one_epoch(model, loader, optimizer, device, encoders_frozen):
-    set_train_mode(model, encoders_frozen)
-
-    total_loss, total_correct, total_samples = 0.0, 0, 0
-
-    pbar = tqdm(loader, desc="Training")
-    for batch in pbar:
-        landmarks, rgb, video_mask, labels, _ = to_device(batch, device)
-
-        optimizer.zero_grad(set_to_none=True)
-        out = model(landmarks, rgb, labels=labels, video_mask=video_mask)
-        loss = out["loss"]
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            [p for p in model.parameters() if p.requires_grad], max_norm=1.0
-        )
-        optimizer.step()
-
-        bs = labels.size(0)
-        total_loss += loss.item() * bs
-        total_correct += (out["logits"].argmax(dim=-1) == labels).sum().item()
-        total_samples += bs
-
-        pbar.set_postfix(
-            loss=f"{loss.item():.4f}", acc=f"{100 * total_correct / total_samples:.2f}%"
-        )
-
-    return total_loss / max(total_samples, 1), total_correct / max(total_samples, 1)
-
-
-@torch.no_grad()
-def validate(model, loader, device, top_k=TOP_K):
-    model.eval()
-
-    total_loss, total_samples = 0.0, 0
-    top1_correct, topk_correct = 0, 0
-
-    for batch in loader:
-        landmarks, rgb, video_mask, labels, _ = to_device(batch, device)
-
-        out = model(landmarks, rgb, labels=labels, video_mask=video_mask)
-        logits = out["logits"]
-
-        bs = labels.size(0)
-        total_loss += out["loss"].item() * bs
-        total_samples += bs
-
-        top1_correct += (logits.argmax(dim=1) == labels).sum().item()
-        topk_idx = torch.topk(logits, k=min(top_k, logits.size(1)), dim=1).indices
-        topk_correct += (topk_idx == labels.unsqueeze(1)).any(dim=1).sum().item()
-
-    n = max(total_samples, 1)
-    return total_loss / n, top1_correct / n, topk_correct / n
-
-
-def build_model(args, num_classes):
-    model_kwargs = {"num_classes": num_classes}
-    ckpt = None
-
-    if args.pretrained and os.path.exists(args.pretrained):
-        ckpt = torch.load(args.pretrained, map_location="cpu")
-        model_kwargs = ckpt.get("model_kwargs", model_kwargs)
-        assert model_kwargs["num_classes"] == num_classes, (
-            f"num_classes lệch: checkpoint={model_kwargs['num_classes']} vs dataset={num_classes}"
-        )
-    elif args.pretrained:
-        print(f"⚠ Không tìm thấy {args.pretrained} -> train từ đầu (không pretrain)")
-
-    model = PoseRGBFusionModel(**model_kwargs)
-
-    if ckpt is not None:
-        print("Load Stage 1:", model.load_state_dict(ckpt["model"], strict=False))
-        v = ckpt.get("val", {})
-        if v:
-            print(
-                f"  (Stage 1 val InfoNCE={v.get('loss', float('nan')):.4f}, "
-                f"pose->rgb R@1={v.get('p2r_r1', float('nan')) * 100:.2f}%)"
-            )
-
-    return model.to(DEVICE), model_kwargs
+    return parser
 
 
 def main(args):
     print(f"Device: {DEVICE}")
 
+    print("\nLoading datasets...")
     fusion_component = FusionComponent()
 
-    print("\nLoading datasets...")
-    ds_kwargs = {"image_size": args.image_size, "max_frames": args.max_frames}
     train_dataset = WLASLLandmarksRGBDataset(
-        args.data_path,
-        args.label_path,
-        args.video_dir,
-        fusion_component,
-        mode="train",
-        **ds_kwargs,
+        args.data_path, args.label_path, args.rgb_dir, fusion_component, mode="train"
     )
     val_dataset = WLASLLandmarksRGBDataset(
-        args.data_path,
-        args.label_path,
-        args.video_dir,
-        fusion_component,
-        mode=args.val_mode,
-        **ds_kwargs,
+        args.data_path, args.label_path, args.rgb_dir, fusion_component, mode=args.val_mode
     )
 
     train_loader = DataLoader(
@@ -209,77 +89,68 @@ def main(args):
         num_classes = len(json.load(f))
     print(f"Number of classes: {num_classes}")
 
-    model, model_kwargs = build_model(args, num_classes)
+    model_kwargs = {"num_classes": num_classes}
+    model = PoseRGBFusionModel(**model_kwargs).to(DEVICE)
 
-    # --- param groups: encoder (lr nhỏ) vs fusion + classifier (lr chuẩn) ---
-    encoder_params = list(model.pose_encoder.parameters()) + list(
-        model.rgb_encoder.parameters()
-    )
-    encoder_ids = {id(p) for p in encoder_params}
-    fusion_params = [
-        p
-        for n, p in model.named_parameters()
-        if id(p) not in encoder_ids
-        and not n.startswith(("pose_head", "rgb_head", "logit_scale"))
-    ]
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total params    : {total_params:,}")
+    print(f"Trainable params: {trainable_params:,}")
+
+    # --------------------------------------------------------
+    # Load Stage-1 checkpoint (weights only)
+    # --------------------------------------------------------
+    stage1_ckpt_path = args.stage1_ckpt
+    if stage1_ckpt_path and os.path.isfile(stage1_ckpt_path):
+        print(f"\n⟳ Loading Stage-1 checkpoint: {stage1_ckpt_path}")
+        model.load_pretrained(stage1_ckpt_path)
+        print("✓ Stage-1 checkpoint loaded successfully.\n")
+    else:
+        print(f"\n⚠ Stage-1 checkpoint not found at: {stage1_ckpt_path}. Training from scratch.\n")
 
     optimizer = torch.optim.AdamW(
-        [
-            {"params": fusion_params, "lr": args.lr},
-            {"params": encoder_params, "lr": args.lr * args.encoder_lr_scale},
-        ],
-        eps=1e-8,
-        weight_decay=WEIGHT_DECAY,
+        model.parameters(), lr=args.lr, eps=1e-8, weight_decay=WEIGHT_DECAY
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-7
+        optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6
     )
 
-    print(f"Total params    : {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Fusion params   : {sum(p.numel() for p in fusion_params):,}")
-    print(f"Encoder params  : {sum(p.numel() for p in encoder_params):,}")
-
-    best_acc, best_loss, no_improve = 0.0, float("inf"), 0
-    encoders_frozen = args.freeze_epochs > 0
-    model.freeze_encoders(encoders_frozen)
+    best_acc = 0.0
+    best_loss = float("inf")
+    no_improve = 0
 
     for epoch in range(args.epochs):
-        if encoders_frozen and epoch >= args.freeze_epochs:
-            model.freeze_encoders(False)
-            encoders_frozen = False
-            no_improve = 0  # reset patience vì bắt đầu giai đoạn mới
-            print("\n>>> Unfreeze encoders (fine-tune toàn bộ)")
-
         print("\n" + "=" * 70)
-        print(
-            f"Epoch {epoch + 1}/{args.epochs}  [{'FROZEN encoders' if encoders_frozen else 'FULL fine-tune'}]"
-        )
+        print(f"Epoch {epoch + 1}/{args.epochs}")
         print("=" * 70)
 
-        train_loss, train_acc = train_one_epoch(
-            model, train_loader, optimizer, DEVICE, encoders_frozen
-        )
-        val_loss, val_top1, val_topk = validate(model, val_loader, DEVICE, top_k=TOP_K)
+        train_out = train_rgb_one_epoch(model, train_loader, optimizer, DEVICE)
+        val_out = validate_rgb(model, val_loader, DEVICE, top_k=args.top_k)
+
+        train_loss = train_out["loss"]
+        train_acc  = train_out["acc"]
+        val_loss   = val_out["loss"]
+        val_top1   = val_out["top1"]
+        val_topk   = val_out["topk"]
 
         scheduler.step(val_loss)
-        lrs = [g["lr"] for g in optimizer.param_groups]
+        current_lr = optimizer.param_groups[0]["lr"]
 
         print(
             f"\n"
-            f"Train loss      : {train_loss:.4f}\n"
-            f"Train top-1 acc : {train_acc * 100:.2f}%\n"
-            f"Val loss        : {val_loss:.4f}\n"
-            f"Val top-1 acc   : {val_top1 * 100:.2f}%\n"
-            f"Val top-{TOP_K} acc   : {val_topk * 100:.2f}%\n"
-            f"LR (fusion/enc) : {lrs[0]:.7f} / {lrs[1]:.7f}"
+            f"Train loss        : {train_loss:.4f}\n"
+            f"Train top-1 acc   : {train_acc * 100:.2f}%\n"
+            f"Val loss          : {val_loss:.4f}\n"
+            f"Val top-1 acc     : {val_top1 * 100:.2f}%\n"
+            f"Val top-{args.top_k} acc     : {val_topk * 100:.2f}%\n"
+            f"Learning rate     : {current_lr:.7f}"
         )
 
-        improved = val_top1 > best_acc or (
-            val_top1 == best_acc and val_loss < best_loss
-        )
+        improved = val_top1 > best_acc or (val_top1 == best_acc and val_loss < best_loss)
         if improved:
             no_improve = 0
-            best_acc, best_loss = val_top1, val_loss
+            best_acc = val_top1
+            best_loss = val_loss
 
             checkpoint = {
                 "model": model.state_dict(),
@@ -299,10 +170,10 @@ def main(args):
         else:
             no_improve += 1
             print(
-                f"\nNo improvement (best top-1={best_acc * 100:.2f}%), patience={no_improve}/{PATIENCE}"
+                f"\nNo improvement (best top-1={best_acc * 100:.2f}%), patience={no_improve}/{args.patience}"
             )
 
-        if no_improve >= PATIENCE and not encoders_frozen:
+        if no_improve >= args.patience:
             print(f"\n⚑ Early stopping at epoch {epoch + 1}")
             break
 
@@ -310,11 +181,13 @@ def main(args):
             torch.cuda.empty_cache()
 
     print("\n" + "=" * 70)
-    ckpt = torch.load(args.output, map_location="cpu")
-    print(f"Best epoch : {ckpt['epoch'] + 1}")
-    print(f"Val loss   : {ckpt['val_loss']:.4f}")
-    print(f"Top-1 acc  : {ckpt['val_top1_acc'] * 100:.2f}%")
-    print(f"Top-{TOP_K} acc  : {ckpt['val_topk_acc'] * 100:.2f}%")
+    print("Training complete.")
+    if os.path.isfile(args.output):
+        ckpt = torch.load(args.output, map_location=DEVICE)
+        print(f"Best epoch     : {ckpt['epoch'] + 1}")
+        print(f"Val loss       : {ckpt['val_loss']:.4f}")
+        print(f"Top-1 acc      : {ckpt['val_top1_acc'] * 100:.2f}%")
+        print(f"Top-{args.top_k} acc      : {ckpt['val_topk_acc'] * 100:.2f}%")
 
 
 if __name__ == "__main__":

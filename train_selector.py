@@ -2,291 +2,177 @@ import os
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 import argparse
 import json
 
+import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
-from config import DEVICE, ROOT
+from config import DEVICE
+from pipeline_config import (DATA_PATH, IMPORTANCE_DIR, LABEL_DIR, MODEL_DIR, importance_path, set_seed, )
 from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.models.SLT_model import ISLR_Transformer_Selector
-from src.training.train import collate_fn
+from src.training.train import collate_fn, train_one_epoch_selector, validate_selector
 from src.utils import FusionComponent
-from training.train import train_one_epoch_selector, validate_selector
-
-# ============================================================
-# CONFIG
-# ============================================================
-
-DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
-
-LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
-
-OUTPUT_DIR = os.path.join(ROOT, "outputs", "models")
 
 MODEL_NAME = "contest_100_selector_v1.pt"
 
-LR = 1e-4
-BATCH_SIZE = 8
-EPOCHS = 100
-
-TOP_K = 2
-PATIENCE = 10
-
-WEIGHT_DECAY = 0.01
-
-
-# ============================================================
-# ARGUMENTS
-# ============================================================
-
 
 def default_args():
-    parser = argparse.ArgumentParser(add_help=False)
-
-    parser.add_argument("--data_path", default=DATA_PATH)
-
-    parser.add_argument("--label_path", default=LABEL_DIR)
-
-    parser.add_argument("--output", default=os.path.join(OUTPUT_DIR, MODEL_NAME))
-
-    return parser
-
-
-@torch.no_grad()
-def extract_frame_importance(model, loader, device, save_path):
-    model.eval()
-
-    results = {}
-
-    for batch_idx, (features, labels, video_mask, video_ids) in enumerate(loader):
-        features = features.to(device, non_blocking=True)
-
-        video_mask = video_mask.to(device, non_blocking=True)
-
-        output = model(features, labels=None, video_mask=video_mask)
-
-        importance = output["frame_importance"]
-
-        importance = importance.cpu()
-
-        video_mask_cpu = video_mask.cpu().bool()
-
-        for i, video_id in enumerate(video_ids):
-            valid_length = int(video_mask_cpu[i].sum())
-
-            scores = importance[i, :valid_length].tolist()
-
-            results[str(video_id)] = {"importance": scores, "length": valid_length}
-
-        if batch_idx % 50 == 0:
-            print(f"Extracted {batch_idx + 1} batches")
-
-    # --------------------------------------------------------
-    # Save
-    # --------------------------------------------------------
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-    with open(save_path, "w") as f:
-        json.dump(results, f, indent=2)
-
-    print(f"\n✓ Saved frame importance:\n  {save_path}")
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--data_path", default=DATA_PATH)
+    p.add_argument("--label_path", default=LABEL_DIR)
+    p.add_argument("--output", default=os.path.join(MODEL_DIR, MODEL_NAME))
+    p.add_argument("--val_mode", default="val", help="split dùng để early-stop/chọn checkpoint")
+    p.add_argument("--allow_test_as_val", action="store_true")
+    p.add_argument("--batch_size", type=int, default=8)
+    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--weight_decay", type=float, default=0.01)
+    p.add_argument("--top_k", type=int, default=2)
+    p.add_argument("--patience", type=int, default=10)
+    p.add_argument("--folds", type=int, default=5,
+                   help=">=2: importance của train lấy từ model chưa thấy video đó (out-of-fold). 0: dùng model đầy đủ.")
+    p.add_argument("--seed", type=int, default=42)
+    return p
 
 
-# ============================================================
-# MAIN
-# ============================================================
+def make_loader(ds, batch_size, shuffle):
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn, num_workers=0, pin_memory=True)
 
 
-def main(args):
-    print(f"Device: {DEVICE}")
-
-    # --------------------------------------------------------
-    # Fusion component
-    # --------------------------------------------------------
-
-    fusion_component = FusionComponent()
-
-    # --------------------------------------------------------
-    # Dataset
-    # --------------------------------------------------------
-
-    print("\nLoading datasets...")
-
-    base_train = WLASLLandmarksDataset(
-        args.data_path, args.label_path, fusion_component, mode="train"
-    )
-
-    base_val = WLASLLandmarksDataset(
-        args.data_path, args.label_path, fusion_component, mode="test"
-    )
-
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    train_dataset = base_train
-    val_dataset = base_val
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        collate_fn=collate_fn,
-        num_workers=0,
-        pin_memory=True,
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=False,
-        collate_fn=collate_fn,
-        num_workers=0,
-        pin_memory=True,
-    )
-
-    with open(os.path.join(args.label_path, "gloss2idx.json"), "r") as f:
-        gloss2idx = json.load(f)
-
-    num_classes = len(gloss2idx)
-
-    print(f"Number of classes: {num_classes}")
-
-    model_kwargs = {"num_classes": num_classes}
-
+def fit_selector(model_kwargs, train_ds, val_loader, args, ckpt_path, tag):
+    loader = make_loader(train_ds, args.batch_size, True)
     model = ISLR_Transformer_Selector(**model_kwargs).to(DEVICE)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-8, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
 
-    total_params = sum(p.numel() for p in model.parameters())
+    best_loss, best_info, no_improve = float("inf"), None, 0
+    os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
 
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    print(f"Total params    : {total_params:,}")
-
-    print(f"Trainable params: {trainable_params:,}")
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=LR, eps=1e-8, weight_decay=WEIGHT_DECAY
-    )
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6
-    )
-
-    best_loss = float("inf")
-    best_acc = 0.0
-    no_improve = 0
-
-    for epoch in range(EPOCHS):
-        print("\n" + "=" * 70)
-
-        print(f"Epoch {epoch + 1}/{EPOCHS}")
-
-        print("=" * 70)
-
-        train_loss, train_acc = train_one_epoch_selector(
-            model, train_loader, optimizer, DEVICE
-        )
-
-        val_loss, val_top1_acc, val_topk_acc = validate_selector(
-            model, val_loader, DEVICE, top_k=TOP_K
-        )
-
+    for epoch in range(args.epochs):
+        train_loss, train_acc = train_one_epoch_selector(model, loader, optimizer, DEVICE)
+        val_loss, top1, topk = validate_selector(model, val_loader, DEVICE, top_k=args.top_k)
         scheduler.step(val_loss)
-
-        current_lr = optimizer.param_groups[0]["lr"]
-
-        print(
-            f"\n"
-            f"Train loss       : "
-            f"{train_loss:.4f}\n"
-            f"Train top-1 acc  : "
-            f"{train_acc * 100:.2f}%\n"
-            f"Val loss         : "
-            f"{val_loss:.4f}\n"
-            f"Val top-1 acc    : "
-            f"{val_top1_acc * 100:.2f}%\n"
-            f"Val top-{TOP_K} acc : "
-            f"{val_topk_acc * 100:.2f}%\n"
-            f"Learning rate     : "
-            f"{current_lr:.7f}"
-        )
+        print(f"[{tag}] ep {epoch + 1:3d} | train {train_loss:.4f}/{train_acc * 100:5.2f}% | "
+              f"val {val_loss:.4f} top1 {top1 * 100:5.2f}% top{args.top_k} {topk * 100:5.2f}% | "
+              f"lr {optimizer.param_groups[0]['lr']:.2e}")
 
         if val_loss < best_loss:
-            no_improve = 0
-
-            best_loss = val_loss
-            best_acc = val_top1_acc
-
-            checkpoint = {
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                "epoch": epoch,
-                "val_loss": val_loss,
-                "val_top1_acc": val_top1_acc,
-                "val_topk_acc": val_topk_acc,
-                "model_kwargs": model_kwargs,
-            }
-
-            os.makedirs(os.path.dirname(args.output), exist_ok=True)
-
-            torch.save(checkpoint, args.output)
-
-            print(
-                f"\n✓ Saved best model"
-                f"\n  Top-1: "
-                f"{best_acc * 100:.2f}%"
-                f"\n  Loss : "
-                f"{best_loss:.4f}"
-            )
-
+            best_loss, no_improve = val_loss, 0
+            best_info = {"epoch": epoch, "val_loss": val_loss, "val_top1_acc": top1, "val_topk_acc": topk}
+            torch.save(
+                {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
+                 "model_kwargs": model_kwargs, **best_info}, ckpt_path)
         else:
             no_improve += 1
-
-            print(
-                f"\n"
-                f"No improvement "
-                f"(best loss="
-                f"{best_loss:.4f}), "
-                f"patience="
-                f"{no_improve}/{PATIENCE}"
-            )
-
-        if no_improve >= PATIENCE:
-            print(f"\n⚑ Early stopping at epoch {epoch + 1}")
-
-            break
-
+            if no_improve >= args.patience:
+                print(f"[{tag}] Early stopping ở epoch {epoch + 1}")
+                break
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    print("\n" + "=" * 70)
+    ckpt = torch.load(ckpt_path, map_location=DEVICE, weights_only=False)
+    model.load_state_dict(ckpt["model"])
+    print(f"[{tag}] Best epoch {best_info['epoch'] + 1} | val loss {best_info['val_loss']:.4f} | "
+          f"top1 {best_info['val_top1_acc'] * 100:.2f}%")
+    return model, best_info
 
-    print("Loading best model...")
 
-    checkpoint = torch.load(args.output, map_location=DEVICE)
+@torch.no_grad()
+def extract_frame_importance(model, loader, device):
+    model.eval()
+    results = {}
+    for batch_idx, (features, _labels, video_mask, video_ids) in enumerate(loader):
+        features = features.to(device, non_blocking=True)
+        video_mask = video_mask.to(device, non_blocking=True)
+        importance = model(features, labels=None, video_mask=video_mask)["frame_importance"].cpu()
+        mask = video_mask.cpu().bool()
 
-    model.load_state_dict(checkpoint["model"])
+        for i, vid in enumerate(video_ids):
+            n = int(mask[i].sum())
+            results[str(vid)] = {"importance": importance[i, :n].tolist(), "length": n}
 
-    print(f"Best epoch     : {checkpoint['epoch'] + 1}")
+    return results
 
-    print(f"Best val loss  : {checkpoint['val_loss']:.4f}")
 
-    print(f"Best top-1 acc : {checkpoint['val_top1_acc'] * 100:.2f}%")
+def summarize(name, results):
+    fr = [np.mean(np.asarray(r["importance"]) / max(np.sum(r["importance"]), 1e-9) > 1.0 / r["length"]) for r in
+          results.values()]
+    print(f"  [{name}] {len(results)} video | tỉ lệ frame vượt 1/T trung bình = {np.mean(fr) * 100:.1f}%")
 
-    train_importance_path = os.path.join(
-        OUTPUT_DIR, "wlasl100_train_frame_importance.json"
-    )
-    val_importance_path = os.path.join(OUTPUT_DIR, "wlasl100_val_frame_importance.json")
+def save_json(results, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(results, f)
+    print(f"✓ Đã lưu {path}")
 
-    print("\nExtracting temporal importance for train set...")
-    extract_frame_importance(model, train_loader, DEVICE, train_importance_path)
 
-    print("\nExtracting temporal importance for val set...")
-    extract_frame_importance(model, val_loader, DEVICE, val_importance_path)
+# def make_folds(labels, k, seed):
+#     labels = np.asarray(labels)
+#     rng = np.random.RandomState(seed)
+#     fold_of = np.zeros(len(labels), dtype=np.int64)
+#     for c in np.unique(labels):
+#         idx = np.where(labels == c)[0]
+#         rng.shuffle(idx)
+#         offset = rng.randint(k)
+#         for j, i in enumerate(idx):
+#             fold_of[i] = (j + offset) % k
+#     return fold_of
+#
+
+def main(args):
+    set_seed(args.seed)
+    print(f"Device: {DEVICE}")
+    fusion = FusionComponent()
+
+    train_ds = WLASLLandmarksDataset(args.data_path, args.label_path, fusion, mode="train")
+    val_ds = WLASLLandmarksDataset(args.data_path, args.label_path, fusion, mode="val")
+    test_ds = WLASLLandmarksDataset(args.data_path, args.label_path, fusion, mode="test")
+
+    val_loader = make_loader(val_ds, args.batch_size, False)
+    test_loader = make_loader(test_ds, args.batch_size, False)
+
+    with open(os.path.join(args.label_path, "gloss2idx.json"), "r") as f:
+        num_classes = len(json.load(f))
+    model_kwargs = {"num_classes": num_classes}
+    print(f"Number of classes: {num_classes}")
+
+    model, _ = fit_selector(model_kwargs=model_kwargs, train_ds=train_ds, val_loader=val_loader, args=args,
+        ckpt_path=args.output, tag="full")
+
+    t_loss, t1, tk = validate_selector(model, test_loader, DEVICE, top_k=args.top_k)
+    print(f"\nTEST: loss {t_loss:.4f} | top1 {t1 * 100:.2f}% | top{args.top_k} {tk * 100:.2f}%")
+
+    os.makedirs(IMPORTANCE_DIR, exist_ok=True)
+    print("\nTrích importance cho val/test bằng model đầy đủ...")
+    for name, ds in (("val", val_ds), ("test", test_ds)):
+        res = extract_frame_importance(model, make_loader(ds, args.batch_size, False), DEVICE)
+        summarize(name, res)
+        save_json(res, importance_path(name))
+
+    print("\nTrích importance cho train...")
+    train_res = extract_frame_importance(model, make_loader(train_ds, args.batch_size, False), DEVICE)
+    # if args.folds >= 2:
+    #     fold_of = make_folds(train_ds.labels, args.folds, args.seed)
+    #     train_res = {}
+    #     for k in range(args.folds):
+    #         tr_idx = np.where(fold_of != k)[0].tolist()
+    #         ho_idx = np.where(fold_of == k)[0].tolist()
+    #         ckpt = args.output.replace(".pt", f"_fold{k}.pt")
+    #         fold_model, _ = fit_selector(model_kwargs, Subset(train_ds, tr_idx), val_loader, args, ckpt, f"fold{k}")
+    #         train_res.update(
+    #             extract_frame_importance(fold_model, make_loader(Subset(train_ds, ho_idx), args.batch_size, False),
+    #                                      DEVICE))
+    # else:
+    #     print("⚠ --folds<2: importance của train lấy từ model đã học thuộc train => phân phối lệch so với val/test.")
+    #     train_res = extract_frame_importance(model, make_loader(train_ds, args.batch_size, False), DEVICE)
+    summarize("train", train_res)
+    save_json(train_res, importance_path("train"))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("", parents=[default_args()], add_help=False)
-    args = parser.parse_args()
-    main(args)
+    main(parser.parse_args())

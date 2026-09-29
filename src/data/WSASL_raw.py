@@ -1,231 +1,217 @@
 import json
 import os
+from collections import Counter
 
 import numpy as np
 import torch
-from PIL import Image
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from config import _COORD_DIM
+from pipeline_config import MAX_FRAMES
+from src.utils.rgb import normalize_imagenet
+
+RGB_CACHE_FILENAME = "rgb_frames.npy"   # (N, 3, H, W) uint8
+INDICES_FILENAME = "indices.npy"        # (N,) chỉ số frame trong không gian landmark (0..T-1)
 
 
-class WLASLLandmarksDataset(Dataset):
-    def __init__(self, feature_dir, annotation_dir, fusion_component, mode="train"):
+def _read_split(annotation_dir, mode):
+    with open(os.path.join(annotation_dir, f"{mode}.json"), "r") as f:
+        data = json.load(f)
+    return {str(d["video_id"]): d.get("gloss") for d in data}
+
+
+class _LandmarkBase(Dataset):
+    """Logic chung: đọc split, kiểm tra file, lấy nhãn, cache đặc trưng landmark."""
+
+    _LANDMARK_KEYS = ("left_hand", "right_hand", "pose")
+
+    def __init__(self, feature_dir, annotation_dir, fusion_component, mode="train", cache_landmarks=True):
         self.feature_dir = feature_dir
         self.fusion_component = fusion_component
-
-        self.samples = []
+        self.mode = mode
+        self.cache_landmarks = cache_landmarks
+        self._feature_cache = {}
 
         with open(os.path.join(annotation_dir, "gloss2idx.json"), "r") as f:
             self.gloss2idx = json.load(f)
 
-        with open(os.path.join(annotation_dir, f"{mode}.json"), "r") as f:
-            data = json.load(f)
-            video_ids = [d["video_id"] for d in data]
-            all_video_names = sorted(video_ids)
-
-        for index, video_name in enumerate(all_video_names):
-            video_dir = os.path.join(feature_dir, video_name)
-
-            if not os.path.isdir(video_dir):
-                continue
-
-            left_hand_path = os.path.join(video_dir, "left_hand.npy")
-            right_hand_path = os.path.join(video_dir, "right_hand.npy")
-            pose_path = os.path.join(video_dir, "pose.npy")
-
-            text_path = os.path.join(video_dir, "gloss.txt")
-
-            if (
-                os.path.exists(left_hand_path)
-                and os.path.exists(right_hand_path)
-                and os.path.exists(pose_path)
-                and os.path.exists(text_path)
-            ):
-                self.samples.append(
-                    {
-                        "video_name": video_name,
-                        "left_hand_path": left_hand_path,
-                        "right_hand_path": right_hand_path,
-                        "pose_path": pose_path,
-                        "text_path": text_path,
-                    }
-                )
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-
-        item = self.samples[idx]
-
-        left_features = np.load(item["left_hand_path"])
-        right_features = np.load(item["right_hand_path"])
-        pose_features = np.load(item["pose_path"])
-        video_id = item["video_name"]
-
-        T = left_features.shape[0]
-
-        pose_features = pose_features.reshape(T, 33, 3)[:, :, :_COORD_DIM]
-        left_features = left_features.reshape(T, 21, 3)[:, :, :_COORD_DIM]
-        right_features = right_features.reshape(T, 21, 3)[:, :, :_COORD_DIM]
-
-        with open(item["text_path"], "r", encoding="utf-8") as f:
-            gloss = f.read().strip()
-        label_id = self.gloss2idx[gloss]
-
-        # position_features = self.fusion_component.fuse_follow_position(pose_features, left_features, right_features)
-        shape_features = self.fusion_component.fuse_follow_shape(
-            pose_features, left_features, right_features
-        )
-        # average_feature = self.fusion_component.fuse(pose_features, left_features, right_features)
-
-        features = np.concatenate([shape_features], axis=-1)
-        return features, label_id, video_id
-
-
-from torchvision import transforms
-
-# Tên file cache RGB được tạo bởi preprocess_rgb.py
-_RGB_CACHE_FILENAME = "rgb_frames.npy"
-
-
-class WLASLLandmarksRGBDataset(Dataset):
-    """Dataset kết hợp landmark features và RGB frames.
-
-    Args:
-        feature_dir: Thư mục chứa các thư mục feature (left_hand.npy, ...).
-        annotation_dir: Thư mục chứa gloss2idx.json và {mode}.json.
-        rgb_dir: Thư mục chứa các thư mục ảnh thô (mỗi video một thư mục).
-            Chỉ dùng khi ``use_cache=False``.
-        fusion_component: Object xử lý fusion landmark.
-        mode: ``"train"`` hoặc ``"test"``.
-        max_frames: Số frame tối đa (chưa dùng đến, để dành cho future use).
-        crop_mode: Chế độ crop (chưa dùng đến).
-        use_cache: Nếu ``True`` (mặc định), load RGB từ file ``rgb_frames.npy``
-            đã được pre-process bởi ``preprocess_rgb.py``.
-            Nếu ``False``, load và transform ảnh trực tiếp trong lúc train
-            (chậm hơn đáng kể).
-    """
-
-    def __init__(
-        self,
-        feature_dir,
-        annotation_dir,
-        rgb_dir,
-        fusion_component,
-        mode="train",
-        max_frames=64,
-        crop_mode=None,
-        use_cache=True,
-    ):
-        self.feature_dir = feature_dir
-        self.fusion_component = fusion_component
-        self.max_frames = max_frames
-        self.crop_mode = crop_mode
-        self.rgb_dir = rgb_dir
-        self.use_cache = use_cache
-
-        # Transform chỉ dùng khi use_cache=False (on-the-fly loading)
-        self.rgb_transform = transforms.Compose(
-            [
-                transforms.Resize((112, 112)),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225],
-                ),
-            ]
-        )
-
-        with open(os.path.join(annotation_dir, "gloss2idx.json"), "r") as f:
-            self.gloss2idx = json.load(f)
-
-        with open(os.path.join(annotation_dir, f"{mode}.json"), "r") as f:
-            data = json.load(f)
-            all_video_names = sorted(d["video_id"] for d in data)
-
+        entries = _read_split(annotation_dir, mode)
         self.samples = []
-        missing_cache = 0
+        self.skipped = Counter()
 
-        for video_name in all_video_names:
+        for video_name in sorted(entries):
             feat_dir = os.path.join(feature_dir, video_name)
             if not os.path.isdir(feat_dir):
+                self.skipped["no_feature_dir"] += 1
                 continue
 
-            rgb_cache_path = os.path.join(feat_dir, _RGB_CACHE_FILENAME)
+            paths = {f"{k}_path": os.path.join(feat_dir, f"{k}.npy") for k in self._LANDMARK_KEYS}
+            if not all(os.path.exists(p) for p in paths.values()):
+                self.skipped["missing_landmark_file"] += 1
+                continue
 
-            # Khi dùng cache, bỏ qua video chưa được pre-process
-            if use_cache and not os.path.exists(rgb_cache_path):
-                missing_cache += 1
+            gloss = self._resolve_gloss(video_name, entries[video_name], feat_dir)
+            if gloss is None or gloss not in self.gloss2idx:
+                self.skipped["unknown_gloss"] += 1
+                continue
+
+            extra, reason = self._extra_sample_info(video_name)
+            if extra is None:
+                self.skipped[reason] += 1
                 continue
 
             self.samples.append(
-                {
-                    "video_name": video_name,
-                    "feat_dir": feat_dir,
-                    "left_hand_path": os.path.join(feat_dir, "left_hand.npy"),
-                    "right_hand_path": os.path.join(feat_dir, "right_hand.npy"),
-                    "pose_path": os.path.join(feat_dir, "pose.npy"),
-                    "text_path": os.path.join(feat_dir, "gloss.txt"),
-                    "rgb_cache_path": rgb_cache_path,
-                    "rgb_path": os.path.join(rgb_dir, video_name),
-                }
+                {"video_name": video_name, "label": self.gloss2idx[gloss], **paths, **extra}
             )
 
-        if use_cache and missing_cache > 0:
-            print(
-                f"[WLASLLandmarksRGBDataset] Cảnh báo: bỏ qua {missing_cache} video "
-                f"chưa có {_RGB_CACHE_FILENAME}. "
-                f"Hãy chạy preprocess_rgb.py trước."
-            )
+        self._report()
+
+    # ---- hooks ----
+    def _extra_sample_info(self, video_name):
+        return {}, None
+
+    # ---- helpers ----
+    def _resolve_gloss(self, video_name, gloss_ann, feat_dir):
+        """Ưu tiên gloss trong annotation (nguồn sự thật); fallback gloss.txt."""
+        text_path = os.path.join(feat_dir, "gloss.txt")
+        gloss_txt = None
+        if os.path.exists(text_path):
+            with open(text_path, "r", encoding="utf-8") as f:
+                gloss_txt = f.read().strip()
+        if gloss_ann is not None:
+            if gloss_txt is not None and gloss_txt != gloss_ann:
+                self.skipped["gloss_mismatch(ann_used)"] += 1
+            return gloss_ann
+        return gloss_txt
+
+    def _report(self):
+        name = type(self).__name__
+        print(f"[{name}] mode={self.mode}: {len(self.samples)} mẫu hợp lệ.")
+        for reason, n in self.skipped.items():
+            print(f"[{name}]   - {reason}: {n}")
+        if not self.samples:
+            raise RuntimeError(f"[{name}] Không có mẫu nào cho mode='{self.mode}'. Kiểm tra đường dẫn/cache.")
+
+    @property
+    def labels(self):
+        return [s["label"] for s in self.samples]
+
+    def _load_features(self, item):
+        vid = item["video_name"]
+        feats = self._feature_cache.get(vid)
+        if feats is None:
+            left = np.load(item["left_hand_path"])
+            right = np.load(item["right_hand_path"])
+            pose = np.load(item["pose_path"])
+            T = left.shape[0]
+            pose = pose.reshape(T, 33, 3)[:, :, :_COORD_DIM]
+            left = left.reshape(T, 21, 3)[:, :, :_COORD_DIM]
+            right = right.reshape(T, 21, 3)[:, :, :_COORD_DIM]
+            feats = self.fusion_component.fuse_follow_shape(pose, left, right)  # (T, D)
+            if self.cache_landmarks:
+                self._feature_cache[vid] = feats
+        return feats
 
     def __len__(self):
         return len(self.samples)
 
-    def _load_rgb_cached(self, item) -> torch.Tensor:
-        """Load RGB từ file .npy đã pre-process. Trả về tensor (T, C, H, W)."""
-        arr = np.load(item["rgb_cache_path"])  # (T, C, H, W), float32
-        return torch.from_numpy(arr)
 
-    def _load_rgb_online(self, item) -> torch.Tensor:
-        """Load và transform ảnh trực tiếp từ thư mục. Trả về tensor (T, C, H, W)."""
-        frames = []
-        for filename in sorted(os.listdir(item["rgb_path"])):
-            if not filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                continue
-            path = os.path.join(item["rgb_path"], filename)
-            image = Image.open(path).convert("RGB")
-            frames.append(self.rgb_transform(image))
-        return torch.stack(frames, dim=0)
+class WLASLLandmarksDataset(_LandmarkBase):
+    """Dùng cho selector: giữ nguyên toàn bộ T frame để chấm importance."""
 
     def __getitem__(self, idx):
         item = self.samples[idx]
+        return self._load_features(item), item["label"], item["video_name"]
 
-        # --- Landmark features ---
-        left_features = np.load(item["left_hand_path"])
-        right_features = np.load(item["right_hand_path"])
-        pose_features = np.load(item["pose_path"])
-        video_id = item["video_name"]
+def _sample_positions(n, max_frames, train):
+    """Chọn tối đa max_frames vị trí theo thứ tự thời gian. Train: mỗi đoạn lấy ngẫu nhiên (temporal jitter)."""
+    if n <= max_frames:
+        return None
+    if train:
+        edges = np.linspace(0, n, max_frames + 1)
+        pos = [np.random.randint(int(edges[i]), max(int(edges[i + 1]), int(edges[i]) + 1)) for i in range(max_frames)]
+        return np.asarray(pos, dtype=np.int64)
+    return np.linspace(0, n - 1, max_frames).round().astype(np.int64)
 
-        T = left_features.shape[0]
-        pose_features = pose_features.reshape(T, 33, 3)[:, :, :_COORD_DIM]
-        left_features = left_features.reshape(T, 21, 3)[:, :, :_COORD_DIM]
-        right_features = right_features.reshape(T, 21, 3)[:, :, :_COORD_DIM]
 
-        with open(item["text_path"], "r", encoding="utf-8") as f:
-            gloss = f.read().strip()
+def _augment_clip(x):
+    """x: float (T, 3, H, W) trong [0,1]. Cùng một phép biến đổi cho cả clip.
+    Không lật ngang vì đổi tay thuận thay đổi nghĩa/kết quả của ký hiệu."""
+    _, _, H, W = x.shape
+    scale = np.random.uniform(0.8, 1.0)
+    ch, cw = int(round(H * scale)), int(round(W * scale))
+    top = np.random.randint(0, H - ch + 1)
+    left = np.random.randint(0, W - cw + 1)
+    if (ch, cw) != (H, W):
+        x = x[:, :, top:top + ch, left:left + cw]
+        x = F.interpolate(x, size=(H, W), mode="bilinear", align_corners=False)
+    brightness = np.random.uniform(0.8, 1.2)
+    contrast = np.random.uniform(0.8, 1.2)
+    x = x * brightness
+    mean = x.mean()
+    x = (x - mean) * contrast + mean
+    return x.clamp(0.0, 1.0)
 
-        label_id = self.gloss2idx[gloss]
-        shape_features = self.fusion_component.fuse_follow_shape(
-            pose_features, left_features, right_features
-        )
-        features = np.concatenate([shape_features], axis=-1)  # (T, D)
 
-        # --- RGB frames ---
-        if self.use_cache:
-            rgbs = self._load_rgb_cached(item)
+class WLASLLandmarksRGBDataset(_LandmarkBase):
+    """Landmark + RGB đã chọn frame.
+
+    - RGB đọc từ <rgb_dir>/<video>/{rgb_frames.npy, indices.npy}.
+    - indices.npy cho biết mỗi frame RGB ứng với frame landmark nào; landmark được lấy đúng các
+      chỉ số đó nên pose[i] và rgb[i] LUÔN cùng thời điểm và cùng độ dài.
+    - max_frames được áp dụng thật (train: jitter ngẫu nhiên, eval: đều).
+    """
+
+    def __init__(self, feature_dir, annotation_dir, rgb_dir, fusion_component, mode="train",
+                 max_frames=MAX_FRAMES, augment=None, cache_landmarks=True):
+        print(feature_dir)
+        print(annotation_dir)
+        print(rgb_dir)
+        self.rgb_dir = rgb_dir
+        self.max_frames = max_frames
+        self.augment = (mode == "train") if augment is None else augment
+        super().__init__(feature_dir, annotation_dir, fusion_component, mode, cache_landmarks)
+
+    def _extra_sample_info(self, video_name):
+        d = os.path.join(self.rgb_dir, video_name)
+        rgb_path = os.path.join(d, RGB_CACHE_FILENAME)
+        idx_path = os.path.join(d, INDICES_FILENAME)
+        if not os.path.exists(rgb_path):
+            return None, "missing_rgb_cache(chạy extract_important_frame.py)"
+        if not os.path.exists(idx_path):
+            return None, "missing_indices(cache cũ, cần extract lại)"
+        return {"rgb_cache_path": rgb_path, "indices_path": idx_path}, None
+
+    def __getitem__(self, idx):
+        item = self.samples[idx]
+        feats = self._load_features(item)                     # (T, D)
+        indices = np.load(item["indices_path"])               # (N,)
+        rgb = np.load(item["rgb_cache_path"], mmap_mode="r")  # (N, 3, H, W)
+
+        if len(indices) != len(rgb):
+            raise ValueError(f"{item['video_name']}: indices ({len(indices)}) != rgb ({len(rgb)})")
+        if indices.max() >= len(feats):
+            raise ValueError(
+                f"{item['video_name']}: indices vượt độ dài landmark ({indices.max()} >= {len(feats)}). "
+                f"Landmark và cache RGB được tạo từ hai phiên bản dữ liệu khác nhau."
+            )
+
+        feats = feats[indices]
+        positions = _sample_positions(len(indices), self.max_frames, self.augment)
+        if positions is not None:
+            feats = feats[positions]
+            rgb_arr = rgb[positions]
         else:
-            rgbs = self._load_rgb_online(item)
+            rgb_arr = np.asarray(rgb)
 
-        return features, rgbs, label_id, video_id
+        frames = torch.from_numpy(np.ascontiguousarray(rgb_arr))
+        if frames.dtype == torch.uint8:
+            x = frames.float() / 255.0
+            if self.augment:
+                x = _augment_clip(x)
+            x = normalize_imagenet(x)
+        else:
+            x = frames.float()  # cache cũ đã chuẩn hóa sẵn (float32)
+
+        return feats, x, item["label"], item["video_name"]

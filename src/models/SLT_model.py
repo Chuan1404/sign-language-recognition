@@ -576,42 +576,55 @@ class ISLR_EncoderDecoder(nn.Module):
 
         return logits, loss
 
-
 class TemporalShift(nn.Module):
-    def __init__(self, net, n_segment, fold_div=8):
+    def __init__(self, net, n_segment=1, fold_div=8):
         super().__init__()
         self.net, self.n_segment, self.fold_div = net, n_segment, fold_div
+        self.valid = None  # (B, T) bool, được RGBEncoder gán trước mỗi lần forward
 
-    def forward(self, x):  # x: (N*K, C, H, W), các frame của cùng 1 chuỗi nằm liền nhau
+    def forward(self, x):
         nt, c, h, w = x.shape
-        x = x.view(nt // self.n_segment, self.n_segment, c, h, w)
+        T = self.n_segment
         fold = c // self.fold_div
-        out = torch.zeros_like(x)
-        out[:, :-1, :fold] = x[:, 1:, :fold]  # frame t nhận từ t+1
-        out[:, 1:, fold : 2 * fold] = x[:, :-1, fold : 2 * fold]  # frame t nhận từ t-1
-        out[:, :, 2 * fold :] = x[:, :, 2 * fold :]
-        return self.net(out.view(nt, c, h, w))
+        if fold == 0 or T < 2:
+            return self.net(x)
+
+        x = x.reshape(nt // T, T, c, h, w)
+        src = x[:, :, : 2 * fold]
+        if self.valid is not None:
+            src = src * self.valid.reshape(-1, T, 1, 1, 1).to(x.dtype)
+
+        back = F.pad(src[:, 1:, :fold], (0, 0, 0, 0, 0, 0, 0, 1))  # frame t nhận từ t+1
+        fwd = F.pad(src[:, :-1, fold : 2 * fold], (0, 0, 0, 0, 0, 0, 1, 0))  # frame t nhận từ t-1
+        out = torch.cat([back, fwd, x[:, :, 2 * fold :]], dim=2)
+        return self.net(out.reshape(nt, c, h, w))
+
+
+_MOBILENET_V3 = {
+    "mobilenet_v3_large": (models.mobilenet_v3_large, "MobileNet_V3_Large_Weights"),
+    "mobilenet_v3_small": (models.mobilenet_v3_small, "MobileNet_V3_Small_Weights"),
+}
 
 
 class RGBEncoder(nn.Module):
-    def __init__(self, d_model=256, dropout=0.2, pretrained=True):
+
+    def __init__(self, d_model=256, dropout=0.2, pretrained=True, variant="mobilenet_v3_large"):
         super().__init__()
-        resnet = models.resnet18(
-            weights=models.ResNet18_Weights.DEFAULT if pretrained else None
-        )
+
+        builder, weights_name = _MOBILENET_V3[variant]
+        weights = getattr(models, weights_name).DEFAULT if pretrained else None
+        mobilenet = builder(weights=weights)
 
         self.shift_modules = []
-        for layer in (resnet.layer1, resnet.layer2, resnet.layer3, resnet.layer4):
-            for block in layer:
-                if isinstance(block, BasicBlock):
-                    block.conv1 = TemporalShift(
-                        block.conv1, n_segment=1
-                    )  # cập nhật theo T ở forward
-                    self.shift_modules.append(block.conv1)
+        for block in mobilenet.features:
+            if getattr(block, "use_res_connect", False):
+                block.block[0] = TemporalShift(block.block[0], n_segment=1)
+                self.shift_modules.append(block.block[0])
 
-        self.backbone = nn.Sequential(*list(resnet.children())[:-1])  # (N,512,1,1)
+        self.feat_dim = mobilenet.features[-1].out_channels
+        self.backbone = nn.Sequential(mobilenet.features, mobilenet.avgpool)  # (N, feat_dim, 1, 1)
         self.proj = nn.Sequential(
-            nn.Linear(512, d_model),
+            nn.Linear(self.feat_dim, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.LayerNorm(d_model),
@@ -622,18 +635,22 @@ class RGBEncoder(nn.Module):
 
     def forward(self, rgb_frames, video_mask):
         B, T, C, H, W = rgb_frames.shape
+        video_mask = video_mask.bool()
         for m in self.shift_modules:
             m.n_segment = T
+            m.valid = video_mask
 
         x = rgb_frames.reshape(B * T, C, H, W)
-        x = self.backbone(x).view(B, T, 512)
-        x = self.proj(x)  # (B,T,d_model)
+        x = self.backbone(x).flatten(1).view(B, T, self.feat_dim)
 
-        lengths = (
-            video_mask.bool().sum(dim=1, keepdim=True).clamp(min=2).float()
-        )  # (B,1)
-        pos = torch.arange(T, device=x.device).float().unsqueeze(0)  # (1,T)
-        t = (pos / (lengths - 1)).clamp(max=1.0).unsqueeze(-1)  # (B,T,1)
+        for m in self.shift_modules:
+            m.valid = None  # không giữ tham chiếu tới mask sau forward
+
+        x = self.proj(x)  # (B, T, d_model)
+
+        lengths = video_mask.sum(dim=1, keepdim=True).clamp(min=2).float()  # (B, 1)
+        pos = torch.arange(T, device=x.device).float().unsqueeze(0)  # (1, T)
+        t = (pos / (lengths - 1)).clamp(max=1.0).unsqueeze(-1)  # (B, T, 1)
         return x + self.time_embed(t)
 
 
@@ -643,16 +660,20 @@ class PoseRGBFusionModel(nn.Module):
         num_classes=1000,
         d_model=256,
         nhead=8,
-        num_fusion_layers=2,
+        num_fusion_layers=8,
         proj_dim=128,
         dropout=0.2,
+        rgb_backbone="mobilenet_v3_large",
+        rgb_pretrained=True,
     ):
         super().__init__()
 
         self.pose_encoder = ISLR_Transformer(
             hidden_dim=d_model, dropout=dropout, num_classes=num_classes
         )
-        self.rgb_encoder = RGBEncoder(d_model=d_model, dropout=dropout)
+        self.rgb_encoder = RGBEncoder(
+            d_model=d_model, dropout=dropout, pretrained=rgb_pretrained, variant=rgb_backbone
+        )
 
         def head():
             return nn.Sequential(
@@ -677,28 +698,33 @@ class PoseRGBFusionModel(nn.Module):
 
         self.fusion_norm = nn.LayerNorm(2 * d_model)
         self.drop = nn.Dropout(dropout)
-        self.classifier = nn.Linear(2 * d_model, num_classes)
+        self.classifier = nn.Linear(d_model, num_classes)
 
     def encode(self, pose_feature, rgb_feature, feature_mask, rgb_mask):
         feature_mask = feature_mask.bool()
         rgb_mask = rgb_mask.bool()
 
         pose = self.pose_encoder.encode(pose_feature, feature_mask)
-
         rgb = self.rgb_encoder(rgb_feature, rgb_mask)
 
         return pose, rgb
 
     @staticmethod
-    def _info_nce(a, b, scale):
+    def _info_nce(a, b, scale, labels=None):
         logits = scale * a @ b.t()
         target = torch.arange(a.size(0), device=a.device)
+
+        if labels is not None:
+            # video khác nhau nhưng cùng gloss KHÔNG phải negative của nhau
+            same = labels.unsqueeze(0) == labels.unsqueeze(1)
+            drop = same & ~torch.eye(a.size(0), dtype=torch.bool, device=a.device)
+            logits = logits.masked_fill(drop, float("-inf"))
 
         return 0.5 * (
             F.cross_entropy(logits, target) + F.cross_entropy(logits.t(), target)
         )
 
-    def forward_pretrain(self, pose_feature, rgb_feature, feature_mask, rgb_mask):
+    def forward_pretrain(self, pose_feature, rgb_feature, feature_mask, rgb_mask, labels=None):
         feature_mask = feature_mask.bool()
         rgb_mask = rgb_mask.bool()
 
@@ -708,7 +734,7 @@ class PoseRGBFusionModel(nn.Module):
         p_g = F.normalize(self.pose_head(masked_mean_pool(pose, feature_mask)), dim=-1)
         r_g = F.normalize(self.rgb_head(masked_mean_pool(rgb, rgb_mask)), dim=-1)
 
-        loss = self._info_nce(p_g, r_g, scale)
+        loss = self._info_nce(p_g, r_g, scale, labels)
 
         return {
             "loss": loss,
@@ -725,35 +751,38 @@ class PoseRGBFusionModel(nn.Module):
 
         pose, rgb = self.encode(pose_feature, rgb_feature, feature_mask, rgb_mask)
 
-        pose_pad = ~feature_mask
-        rgb_pad = ~rgb_mask
-
-        for pose_layer, rgb_layer in zip(self.pose_from_rgb, self.rgb_from_pose):
-            new_pose = pose_layer(pose, rgb, rgb_pad)
-
-            new_rgb = rgb_layer(rgb, pose, pose_pad)
-
-            pose, rgb = new_pose, new_rgb
+        # pose_pad = ~feature_mask
+        # rgb_pad = ~rgb_mask
+        #
+        # for pose_layer, rgb_layer in zip(self.pose_from_rgb, self.rgb_from_pose):
+        #     new_pose = pose_layer(pose, rgb, rgb_pad)
+        #     new_rgb = rgb_layer(rgb, pose, pose_pad)
+        #     pose, rgb = new_pose, new_rgb
 
         pose_pooled = masked_mean_pool(pose, feature_mask)
-
         rgb_pooled = masked_mean_pool(rgb, rgb_mask)
 
-        pooled = torch.cat([pose_pooled, rgb_pooled], dim=-1)
+        pooled = torch.cat([rgb_pooled], dim=-1)
 
-        logits = self.classifier(self.drop(self.fusion_norm(pooled)))
+        logits = self.classifier(self.drop(pooled))
 
         loss = F.cross_entropy(logits, labels) if labels is not None else None
 
         return {"logits": logits, "loss": loss}
 
     def freeze_encoders(self, freeze=True):
-        """Dùng ở đầu Stage 2 (vài epoch đầu) để fusion không phá embedding đã pretrain."""
         for m in (self.pose_encoder, self.rgb_encoder):
             for p in m.parameters():
                 p.requires_grad = not freeze
 
     def load_pretrained(self, path):
-        ckpt = torch.load(path, map_location="cpu")
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
 
-        print(self.load_state_dict(ckpt.get("model", ckpt), strict=False))
+        result = self.load_state_dict(ckpt.get("model", ckpt), strict=False)
+        print(result)
+        bad = [k for k in result.missing_keys if k.startswith("rgb_encoder.backbone")]
+        if bad:
+            print(
+                f"⚠ {len(bad)} tham số của rgb_encoder.backbone KHÔNG được nạp từ checkpoint "
+                f"(checkpoint tạo bởi backbone khác?). Cần chạy lại Stage 1."
+            )

@@ -165,9 +165,6 @@ class WLASLLandmarksRGBDataset(_LandmarkBase):
 
     def __init__(self, feature_dir, annotation_dir, rgb_dir, fusion_component, mode="train",
                  max_frames=MAX_FRAMES, augment=None, cache_landmarks=True):
-        print(feature_dir)
-        print(annotation_dir)
-        print(rgb_dir)
         self.rgb_dir = rgb_dir
         self.max_frames = max_frames
         self.augment = (mode == "train") if augment is None else augment

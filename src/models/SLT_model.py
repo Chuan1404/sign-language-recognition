@@ -238,8 +238,6 @@ class ISLR_Transformer_Selector(nn.Module):
 
         frame_importance = torch.softmax(frame_scores, dim=1)
 
-        # Threshold động: chỉ giữ frame có importance > 1/T (uniform baseline)
-        # T là số frame hợp lệ (không padding) của mỗi sample
         T = video_mask.float().sum(dim=1, keepdim=True).clamp(min=1.0)  # (B, 1)
         threshold = 1.0 / T  # (B, 1)
 
@@ -599,8 +597,27 @@ class TemporalShift(nn.Module):
         out = torch.cat([back, fwd, x[:, :, 2 * fold :]], dim=2)
         return self.net(out.reshape(nt, c, h, w))
 
+class TemporalTransformer(nn.Module):
+    def __init__(self, d_model=256, nhead=8, num_layers=2, dropout=0.2, max_len=128):
+        super().__init__()
+        self.pos = nn.Parameter(torch.zeros(1, max_len, d_model))
+        nn.init.trunc_normal_(self.pos, std=0.02)
+        layer = nn.TransformerEncoderLayer(
+            d_model, nhead, dim_feedforward=d_model * 4, dropout=dropout,
+            activation="gelu", batch_first=True, norm_first=True,
+        )
+        self.enc = nn.TransformerEncoder(layer, num_layers, enable_nested_tensor=False)
+        self.norm = nn.LayerNorm(d_model)
 
-_MOBILENET_V3 = {
+    def forward(self, x, mask):           # x: (B,T,D), mask: (B,T) True = frame hợp lệ
+        x = x + self.pos[:, : x.size(1)]
+        x = self.enc(x, src_key_padding_mask=~mask)
+        return self.norm(x)
+
+_RGB_BACKBONES = {
+    "resnet18": (models.resnet18, "ResNet18_Weights"),
+    "resnet34": (models.resnet34, "ResNet34_Weights"),
+    "resnet50": (models.resnet50, "ResNet50_Weights"),
     "mobilenet_v3_large": (models.mobilenet_v3_large, "MobileNet_V3_Large_Weights"),
     "mobilenet_v3_small": (models.mobilenet_v3_small, "MobileNet_V3_Small_Weights"),
 }
@@ -608,21 +625,34 @@ _MOBILENET_V3 = {
 
 class RGBEncoder(nn.Module):
 
-    def __init__(self, d_model=256, dropout=0.2, pretrained=True, variant="mobilenet_v3_large"):
+    def __init__(self, d_model=256, dropout=0.2, pretrained=True, variant="resnet18"):
         super().__init__()
 
-        builder, weights_name = _MOBILENET_V3[variant]
+        builder, weights_name = _RGB_BACKBONES[variant]
         weights = getattr(models, weights_name).DEFAULT if pretrained else None
-        mobilenet = builder(weights=weights)
+        net = builder(weights=weights)
 
         self.shift_modules = []
-        for block in mobilenet.features:
-            if getattr(block, "use_res_connect", False):
-                block.block[0] = TemporalShift(block.block[0], n_segment=1)
-                self.shift_modules.append(block.block[0])
+        if variant.startswith("resnet"):
+            for layer in [net.layer1, net.layer2, net.layer3, net.layer4]:
+                for block in layer:
+                    block.conv1 = TemporalShift(block.conv1, n_segment=1)
+                    self.shift_modules.append(block.conv1)
 
-        self.feat_dim = mobilenet.features[-1].out_channels
-        self.backbone = nn.Sequential(mobilenet.features, mobilenet.avgpool)  # (N, feat_dim, 1, 1)
+            self.feat_dim = net.fc.in_features
+            modules = list(net.children())[:-1]  # Loại bỏ fc layer, giữ lại từ conv1 đến avgpool
+            self.backbone = nn.Sequential(*modules)
+        elif variant.startswith("mobilenet"):
+            for block in net.features:
+                if getattr(block, "use_res_connect", False):
+                    block.block[0] = TemporalShift(block.block[0], n_segment=1)
+                    self.shift_modules.append(block.block[0])
+
+            self.feat_dim = net.features[-1].out_channels
+            self.backbone = nn.Sequential(net.features, net.avgpool)
+        else:
+            raise ValueError(f"Unsupported backbone variant: {variant}")
+
         self.proj = nn.Sequential(
             nn.Linear(self.feat_dim, d_model),
             nn.GELU(),
@@ -653,7 +683,6 @@ class RGBEncoder(nn.Module):
         t = (pos / (lengths - 1)).clamp(max=1.0).unsqueeze(-1)  # (B, T, 1)
         return x + self.time_embed(t)
 
-
 class PoseRGBFusionModel(nn.Module):
     def __init__(
         self,
@@ -663,7 +692,7 @@ class PoseRGBFusionModel(nn.Module):
         num_fusion_layers=8,
         proj_dim=128,
         dropout=0.2,
-        rgb_backbone="mobilenet_v3_large",
+        rgb_backbone="resnet18",
         rgb_pretrained=True,
     ):
         super().__init__()
@@ -715,7 +744,6 @@ class PoseRGBFusionModel(nn.Module):
         target = torch.arange(a.size(0), device=a.device)
 
         if labels is not None:
-            # video khác nhau nhưng cùng gloss KHÔNG phải negative của nhau
             same = labels.unsqueeze(0) == labels.unsqueeze(1)
             drop = same & ~torch.eye(a.size(0), dtype=torch.bool, device=a.device)
             logits = logits.masked_fill(drop, float("-inf"))
@@ -786,3 +814,45 @@ class PoseRGBFusionModel(nn.Module):
                 f"⚠ {len(bad)} tham số của rgb_encoder.backbone KHÔNG được nạp từ checkpoint "
                 f"(checkpoint tạo bởi backbone khác?). Cần chạy lại Stage 1."
             )
+
+class RGBModel(nn.Module):
+    def __init__(
+        self,
+        num_classes=1000,
+        d_model=256,
+        nhead=8,
+        dropout=0.2,
+        use_temporal=False,
+        rgb_backbone="resnet18",
+        rgb_pretrained=True,
+    ):
+        super().__init__()
+
+        self.rgb_encoder = RGBEncoder(
+            d_model=d_model, dropout=dropout, pretrained=rgb_pretrained, variant=rgb_backbone
+        )
+        self.use_temporal = use_temporal
+
+        if use_temporal:
+            self.temporal = TemporalTransformer(d_model, nhead, num_layers=2, dropout=dropout)
+        self.drop = nn.Dropout(dropout)
+        self.classifier = nn.Linear(d_model, num_classes)
+    def forward(
+        self, pose_feature=None, rgb_feature=None, labels=None, feature_mask=None, rgb_mask=None
+    ):
+        rgb_mask = rgb_mask.bool()
+        rgb = self.rgb_encoder(rgb_feature, rgb_mask)
+        if self.use_temporal:
+            rgb = self.temporal(rgb, rgb_mask)
+
+        rgb_pooled = masked_mean_pool(rgb, rgb_mask)
+        logits = self.classifier(self.drop(rgb_pooled))
+        loss = F.cross_entropy(logits, labels) if labels is not None else None
+
+        return {"logits": logits, "loss": loss}
+    def freeze_encoders(self, freeze=True):
+        for p in self.rgb_encoder.parameters():
+            p.requires_grad = not freeze
+
+
+PoseRGBModel = RGBModel

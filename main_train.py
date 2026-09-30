@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 
 from config import DEVICE, ROOT
 from src.data.WSASL_raw import WLASLLandmarksRGBDataset
-from src.models.SLT_model import PoseRGBFusionModel
+from src.models.SLT_model import PoseRGBFusionModel, RGBModel
 from src.training.train import collate_fn_rgb, train_rgb_one_epoch, validate_rgb
 from src.utils import FusionComponent
 
@@ -90,7 +90,7 @@ def main(args):
     print(f"Number of classes: {num_classes}")
 
     model_kwargs = {"num_classes": num_classes}
-    model = PoseRGBFusionModel(**model_kwargs).to(DEVICE)
+    model = RGBModel(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -100,13 +100,13 @@ def main(args):
     # --------------------------------------------------------
     # Load Stage-1 checkpoint (weights only)
     # --------------------------------------------------------
-    stage1_ckpt_path = args.stage1_ckpt
-    if stage1_ckpt_path and os.path.isfile(stage1_ckpt_path):
-        print(f"\n⟳ Loading Stage-1 checkpoint: {stage1_ckpt_path}")
-        model.load_pretrained(stage1_ckpt_path)
-        print("✓ Stage-1 checkpoint loaded successfully.\n")
-    else:
-        print(f"\n⚠ Stage-1 checkpoint not found at: {stage1_ckpt_path}. Training from scratch.\n")
+    # stage1_ckpt_path = args.stage1_ckpt
+    # if stage1_ckpt_path and os.path.isfile(stage1_ckpt_path):
+    #     print(f"\n⟳ Loading Stage-1 checkpoint: {stage1_ckpt_path}")
+    #     model.load_pretrained(stage1_ckpt_path)
+    #     print("✓ Stage-1 checkpoint loaded successfully.\n")
+    # else:
+    #     print(f"\n⚠ Stage-1 checkpoint not found at: {stage1_ckpt_path}. Training from scratch.\n")
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, eps=1e-8, weight_decay=WEIGHT_DECAY

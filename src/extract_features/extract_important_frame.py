@@ -20,7 +20,7 @@ def select_indices(strategy, scores, T, min_frames, max_frames, fixed_k, rng):
     if fixed_k:
         k = min(int(fixed_k), T)
     elif strategy == "selector":
-        k = int(np.sum(scores > 1.0 / T))
+        k = int(np.sum(scores > (1.0 / T)))
         k = int(np.clip(k, min(min_frames, T), min(max_frames, T)))
     else:
         k = min(max_frames, T)

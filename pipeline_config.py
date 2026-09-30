@@ -17,7 +17,7 @@ IMPORTANCE_DIR = os.path.join(ROOT, "outputs", "frame_importance")
 
 # ---- Hằng số dữ liệu ----
 IMAGE_SIZE = 112
-MAX_FRAMES = 64
+MAX_FRAMES = 100
 MIN_FRAMES = 8
 
 

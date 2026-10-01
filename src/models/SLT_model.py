@@ -601,7 +601,6 @@ class TemporalTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8, num_layers=2, dropout=0.2, max_len=128):
         super().__init__()
         self.pos = nn.Parameter(torch.zeros(1, max_len, d_model))
-        nn.init.trunc_normal_(self.pos, std=0.02)
         layer = nn.TransformerEncoderLayer(
             d_model, nhead, dim_feedforward=d_model * 4, dropout=dropout,
             activation="gelu", batch_first=True, norm_first=True,
@@ -623,35 +622,39 @@ _RGB_BACKBONES = {
 }
 
 
-class RGBEncoder(nn.Module):
+import timm
 
-    def __init__(self, d_model=256, dropout=0.2, pretrained=True, variant="resnet18"):
+_VIT_BACKBONES = {
+    "vit_tiny":  "vit_tiny_patch16_224.augreg_in21k_ft_in1k",   # ~5.7M tham số
+    "vit_small": "vit_small_patch16_224.augreg_in21k_ft_in1k",  # ~22M
+    "vit_base":  "vit_base_patch16_224.augreg_in21k_ft_in1k",   # ~86M
+}
+
+
+class RGBEncoder(nn.Module):
+    def __init__(
+        self,
+        d_model=256,
+        dropout=0.2,
+        pretrained=True,
+        variant="vit_small",
+        img_size=112,
+        drop_path=0.1,
+    ):
         super().__init__()
 
-        builder, weights_name = _RGB_BACKBONES[variant]
-        weights = getattr(models, weights_name).DEFAULT if pretrained else None
-        net = builder(weights=weights)
-
-        self.shift_modules = []
-        if variant.startswith("resnet"):
-            for layer in [net.layer1, net.layer2, net.layer3, net.layer4]:
-                for block in layer:
-                    block.conv1 = TemporalShift(block.conv1, n_segment=1)
-                    self.shift_modules.append(block.conv1)
-
-            self.feat_dim = net.fc.in_features
-            modules = list(net.children())[:-1]  # Loại bỏ fc layer, giữ lại từ conv1 đến avgpool
-            self.backbone = nn.Sequential(*modules)
-        elif variant.startswith("mobilenet"):
-            for block in net.features:
-                if getattr(block, "use_res_connect", False):
-                    block.block[0] = TemporalShift(block.block[0], n_segment=1)
-                    self.shift_modules.append(block.block[0])
-
-            self.feat_dim = net.features[-1].out_channels
-            self.backbone = nn.Sequential(net.features, net.avgpool)
-        else:
+        if variant not in _VIT_BACKBONES:
             raise ValueError(f"Unsupported backbone variant: {variant}")
+
+        self.backbone = timm.create_model(
+            _VIT_BACKBONES[variant],
+            pretrained=pretrained,
+            num_classes=0,
+            img_size=img_size,        # patch 16 -> 7x7 = 49 token, tự nội suy pos-embed
+            drop_path_rate=drop_path,
+        )
+        self.feat_dim = self.backbone.num_features
+        self.img_size = img_size
 
         self.proj = nn.Sequential(
             nn.Linear(self.feat_dim, d_model),
@@ -659,29 +662,23 @@ class RGBEncoder(nn.Module):
             nn.Dropout(dropout),
             nn.LayerNorm(d_model),
         )
-        self.time_embed = nn.Sequential(
-            nn.Linear(1, d_model), nn.GELU(), nn.Linear(d_model, d_model)
-        )
 
     def forward(self, rgb_frames, video_mask):
         B, T, C, H, W = rgb_frames.shape
         video_mask = video_mask.bool()
-        for m in self.shift_modules:
-            m.n_segment = T
-            m.valid = video_mask
 
-        x = rgb_frames.reshape(B * T, C, H, W)
-        x = self.backbone(x).flatten(1).view(B, T, self.feat_dim)
+        frames = rgb_frames[video_mask]                     # (N_valid, C, H, W)
+        feats = self.backbone(frames)                       # (N_valid, feat_dim)
 
-        for m in self.shift_modules:
-            m.valid = None  # không giữ tham chiếu tới mask sau forward
+        x = rgb_frames.new_zeros(B, T, self.feat_dim, dtype=feats.dtype)
+        x[video_mask] = feats                               # frame padding = 0
 
-        x = self.proj(x)  # (B, T, d_model)
+        x = self.proj(x)                                    # (B, T, d_model)
 
-        lengths = video_mask.sum(dim=1, keepdim=True).clamp(min=2).float()  # (B, 1)
-        pos = torch.arange(T, device=x.device).float().unsqueeze(0)  # (1, T)
-        t = (pos / (lengths - 1)).clamp(max=1.0).unsqueeze(-1)  # (B, T, 1)
-        return x + self.time_embed(t)
+        # lengths = video_mask.sum(dim=1, keepdim=True).clamp(min=2).float()
+        # pos = torch.arange(T, device=x.device).float().unsqueeze(0)
+        # t = (pos / (lengths - 1)).clamp(max=1.0).unsqueeze(-1)
+        return x
 
 class PoseRGBFusionModel(nn.Module):
     def __init__(
@@ -692,7 +689,7 @@ class PoseRGBFusionModel(nn.Module):
         num_fusion_layers=8,
         proj_dim=128,
         dropout=0.2,
-        rgb_backbone="resnet18",
+        rgb_backbone="vit_small",
         rgb_pretrained=True,
     ):
         super().__init__()
@@ -822,8 +819,8 @@ class RGBModel(nn.Module):
         d_model=256,
         nhead=8,
         dropout=0.2,
-        use_temporal=False,
-        rgb_backbone="resnet18",
+        use_temporal=True,
+        rgb_backbone="vit_small",
         rgb_pretrained=True,
     ):
         super().__init__()
@@ -835,13 +832,16 @@ class RGBModel(nn.Module):
 
         if use_temporal:
             self.temporal = TemporalTransformer(d_model, nhead, num_layers=2, dropout=dropout)
+
         self.drop = nn.Dropout(dropout)
         self.classifier = nn.Linear(d_model, num_classes)
+
     def forward(
         self, pose_feature=None, rgb_feature=None, labels=None, feature_mask=None, rgb_mask=None
     ):
         rgb_mask = rgb_mask.bool()
         rgb = self.rgb_encoder(rgb_feature, rgb_mask)
+
         if self.use_temporal:
             rgb = self.temporal(rgb, rgb_mask)
 
@@ -850,9 +850,7 @@ class RGBModel(nn.Module):
         loss = F.cross_entropy(logits, labels) if labels is not None else None
 
         return {"logits": logits, "loss": loss}
+
     def freeze_encoders(self, freeze=True):
         for p in self.rgb_encoder.parameters():
             p.requires_grad = not freeze
-
-
-PoseRGBModel = RGBModel

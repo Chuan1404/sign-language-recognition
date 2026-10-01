@@ -1,6 +1,8 @@
 import os
+import sys
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import argparse
 import json
@@ -43,9 +45,69 @@ def read_all_frames(path):
     cap.release()
     return frames
 
+def compute_hand_box_frame(left_frame, right_frame, w, h, margin=0.25, min_size=32):
+    """Bbox vuông quanh bàn tay ở 1 frame cụ thể. Trả về None nếu không phát hiện tay."""
+    pts = []
+    for hand in (left_frame, right_frame):
+        if hand is not None and np.any(hand[:, :2] != 0):
+            valid = hand[:, :2]
+            valid = valid[np.any(valid != 0, axis=1)]
+            valid = valid[
+                (valid[:, 0] >= -0.1) & (valid[:, 0] <= 1.1) &
+                (valid[:, 1] >= -0.1) & (valid[:, 1] <= 1.1)
+            ]
+            if len(valid) >= 3:
+                pts.append(valid)
+    if not pts:
+        return None
+    xy = np.concatenate(pts, axis=0)
+    lo, hi = xy.min(axis=0), xy.max(axis=0)
+    x0, y0, x1, y1 = lo[0] * w, lo[1] * h, hi[0] * w, hi[1] * h
+
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+    side = max(bw, bh) * (1.0 + 2.0 * margin)
+    side = max(side, min_size)
+    side = min(side, min(w, h))
+
+    left_c = int(round(np.clip(cx - side / 2.0, 0, w - side)))
+    top_c = int(round(np.clip(cy - side / 2.0, 0, h - side)))
+    s = int(round(side))
+    return left_c, top_c, min(left_c + s, w), min(top_c + s, h)
+
+
+def compute_video_hand_box(left, right, w, h, margin=0.25, min_size=32):
+    """Bbox vuông bao trọn vùng hoạt động của 2 bàn tay trong toàn bộ video."""
+    pts = []
+    for hand in (left, right):
+        if hand is not None:
+            xy = hand[:, :, :2].reshape(-1, 2)
+            xy = xy[np.any(xy != 0, axis=1)]
+            xy = xy[
+                (xy[:, 0] >= -0.1) & (xy[:, 0] <= 1.1) &
+                (xy[:, 1] >= -0.1) & (xy[:, 1] <= 1.1)
+            ]
+            if len(xy) >= 5:
+                pts.append(xy)
+    if not pts:
+        return None
+    all_xy = np.concatenate(pts, axis=0)
+    lo, hi = np.percentile(all_xy, 2, axis=0), np.percentile(all_xy, 98, axis=0)
+    x0, y0, x1, y1 = lo[0] * w, lo[1] * h, hi[0] * w, hi[1] * h
+
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+    side = max(bw, bh) * (1.0 + 2.0 * margin)
+    side = max(side, min_size)
+    side = min(side, min(w, h))
+
+    left_c = int(round(np.clip(cx - side / 2.0, 0, w - side)))
+    top_c = int(round(np.clip(cy - side / 2.0, 0, h - side)))
+    s = int(round(side))
+    return left_c, top_c, min(left_c + s, w), min(top_c + s, h)
+
+
 def compute_crop_box(feat_dir, w, h, margin):
-    """bbox vuông quanh người ký (upper-body pose + 2 tay), cố định cho cả video để ổn định theo thời gian.
-    Giả định toạ độ landmark chuẩn hóa [0,1] theo khung hình; nếu không thoả thì trả None (dùng toàn khung)."""
     try:
         left = np.load(os.path.join(feat_dir, "left_hand.npy"))
         right = np.load(os.path.join(feat_dir, "right_hand.npy"))
@@ -82,15 +144,43 @@ def process_video(video_id, meta, args, rng, stats):
     indices = select_indices(args.strategy, scores, T, args.min_frames, args.max_frames, args.fixed_k, rng)
 
     frames = read_all_frames(video_path)
+    if not frames:
+        stats["skipped_empty_video"] += 1
+        return
 
-    box = None
-    if args.crop == "signer":
-        h, w = frames[0].shape[:2]
-        box = compute_crop_box(os.path.join(args.data_path, video_id), w, h, args.margin)
+    h, w = frames[0].shape[:2]
+    feat_path = os.path.join(args.data_path, video_id)
+
+    if args.crop in ("hands", "hand"):
+        try:
+            left = np.load(os.path.join(feat_path, "left_hand.npy")).reshape(-1, 21, 3)[:, :, :2]
+            right = np.load(os.path.join(feat_path, "right_hand.npy")).reshape(-1, 21, 3)[:, :, :2]
+            vid_box = compute_video_hand_box(left, right, w, h, args.margin)
+            signer_box = compute_crop_box(feat_path, w, h, args.margin)
+
+            boxes = []
+            for idx in indices:
+                box_i = None
+                if idx < len(left):
+                    box_i = compute_hand_box_frame(left[idx], right[idx], w, h, args.margin)
+                if box_i is None:
+                    box_i = vid_box
+                if box_i is None:
+                    box_i = signer_box
+                boxes.append(box_i)
+        except Exception:
+            boxes = [None] * len(indices)
+            stats["crop_fallback_fullframe"] += 1
+    elif args.crop == "signer":
+        box = compute_crop_box(feat_path, w, h, args.margin)
         if box is None:
             stats["crop_fallback_fullframe"] += 1
+        boxes = [box] * len(indices)
+    else:
+        boxes = [None] * len(indices)
 
-    chw = np.stack([bgr_to_chw_uint8(frames[i], IMAGE_SIZE, box) for i in indices])  # (N,3,H,W) uint8
+    image_size = getattr(args, "image_size", IMAGE_SIZE)
+    chw = np.stack([bgr_to_chw_uint8(frames[i], image_size, b) for i, b in zip(indices, boxes)])  # (N,3,H,W) uint8
 
     os.makedirs(out_dir, exist_ok=True)
     np.save(rgb_path, chw)
@@ -154,11 +244,12 @@ def main(args):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--strategy", choices=["selector", "uniform", "random"], default="selector")
-    p.add_argument("--fixed_k", type=int, default=0, help="Số frame cố định cho mọi video (dùng khi so sánh chiến lược)")
+    p.add_argument("--fixed_k", type=int, default=0, help="Fixed frame count for all videos")
     p.add_argument("--min_frames", type=int, default=MIN_FRAMES)
     p.add_argument("--max_frames", type=int, default=MAX_FRAMES)
-    p.add_argument("--crop", choices=["none", "signer"], default="signer")
-    p.add_argument("--margin", type=float, default=0.15)
+    p.add_argument("--crop", choices=["none", "signer", "hands", "hand"], default="hands", help="Crop mode: none, signer, or hands/hand")
+    p.add_argument("--image_size", type=int, default=IMAGE_SIZE, help="Output square image size (default from pipeline_config.IMAGE_SIZE)")
+    p.add_argument("--margin", type=float, default=0.20, help="Margin around crop region (default 0.20)")
     p.add_argument("--splits", nargs="+", default=["train", "val", "test"])
     p.add_argument("--data_path", default=DATA_PATH)
     p.add_argument("--video_dir", default=RAW_VIDEO_DIR)

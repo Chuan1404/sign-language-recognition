@@ -97,9 +97,6 @@ def main(args):
     print(f"Total params    : {total_params:,}")
     print(f"Trainable params: {trainable_params:,}")
 
-    # --------------------------------------------------------
-    # Load Stage-1 checkpoint (weights only)
-    # --------------------------------------------------------
     # stage1_ckpt_path = args.stage1_ckpt
     # if stage1_ckpt_path and os.path.isfile(stage1_ckpt_path):
     #     print(f"\n⟳ Loading Stage-1 checkpoint: {stage1_ckpt_path}")

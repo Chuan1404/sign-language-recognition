@@ -6,7 +6,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
 import json
-from pipeline_config import SELECTED_RGB_DIR
+from pipeline_config import SELECTED_RGB_DIR, apply_warmup
 
 import torch
 from torch.utils.data import DataLoader
@@ -29,6 +29,7 @@ EPOCHS = 100
 TOP_K = 5
 PATIENCE = 15
 WEIGHT_DECAY = 0.01
+WARMUP_EPOCHS = 5
 
 
 def default_args():
@@ -47,6 +48,7 @@ def default_args():
     parser.add_argument("--lr", type=float, default=LR)
     parser.add_argument("--top_k", type=int, default=TOP_K)
     parser.add_argument("--patience", type=int, default=PATIENCE)
+    parser.add_argument("--warmup_epochs", type=int, default=WARMUP_EPOCHS, help="Number of linear warmup epochs")
     parser.add_argument(
         "--stage1_ckpt",
         default=STAGE1_CKPT,
@@ -108,6 +110,8 @@ def main(args):
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, eps=1e-8, weight_decay=WEIGHT_DECAY
     )
+    base_lrs = [group["lr"] for group in optimizer.param_groups]
+
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6
     )
@@ -117,8 +121,13 @@ def main(args):
     no_improve = 0
 
     for epoch in range(args.epochs):
+        in_warmup = apply_warmup(optimizer, base_lrs, epoch, args.warmup_epochs)
+
         print("\n" + "=" * 70)
-        print(f"Epoch {epoch + 1}/{args.epochs}")
+        if in_warmup:
+            print(f"Epoch {epoch + 1}/{args.epochs} [WARMUP {epoch + 1}/{args.warmup_epochs}]")
+        else:
+            print(f"Epoch {epoch + 1}/{args.epochs}")
         print("=" * 70)
 
         train_out = train_rgb_one_epoch(model, train_loader, optimizer, DEVICE)
@@ -130,8 +139,11 @@ def main(args):
         val_top1   = val_out["top1"]
         val_topk   = val_out["topk"]
 
-        scheduler.step(val_loss)
+        if not in_warmup:
+            scheduler.step(val_loss)
+
         current_lr = optimizer.param_groups[0]["lr"]
+        lr_display = f"{current_lr:.7f} (Warmup)" if in_warmup else f"{current_lr:.7f}"
 
         print(
             f"\n"
@@ -140,7 +152,7 @@ def main(args):
             f"Val loss          : {val_loss:.4f}\n"
             f"Val top-1 acc     : {val_top1 * 100:.2f}%\n"
             f"Val top-{args.top_k} acc     : {val_topk * 100:.2f}%\n"
-            f"Learning rate     : {current_lr:.7f}"
+            f"Learning rate     : {lr_display}"
         )
 
         improved = val_top1 > best_acc or (val_top1 == best_acc and val_loss < best_loss)

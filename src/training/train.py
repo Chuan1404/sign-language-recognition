@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 def collate_fn(batch):
     features, labels, video_ids = [], [], []
+
     for feature, label, video_id in batch:
         features.append(torch.as_tensor(feature, dtype=torch.float32))
         labels.append(label)
@@ -74,7 +75,7 @@ def train_one_epoch(model, loader, optimizer, device="cuda"):
 
     pbar = tqdm(loader, desc="Training")
 
-    for features, labels, video_mask in pbar:
+    for features, labels, video_mask, _ in pbar:
         features = features.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         video_mask = video_mask.to(device, non_blocking=True)
@@ -106,7 +107,7 @@ def validate(model, loader, top_k=5, device="cuda"):
     total_samples = 0
 
     with torch.no_grad():
-        for features, labels, video_mask in loader:
+        for features, labels, video_mask, _ in loader:
             features = features.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
             video_mask = video_mask.to(device, non_blocking=True)

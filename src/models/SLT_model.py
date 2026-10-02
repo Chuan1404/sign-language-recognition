@@ -2,7 +2,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torchvision import models
-from torchvision.models.video.resnet import BasicBlock
 
 from config import _COORD_DIM, _N_HAND, _N_POSE, _NUM_NODE
 from src.models.positional_encoding import PositionalEncoding
@@ -151,7 +150,6 @@ class ISLR_Transformer(nn.Module):
 class ISLR_Transformer_Selector(nn.Module):
     def __init__(
         self,
-        input_dim=_NUM_NODE * _COORD_DIM,
         hidden_dim=256,
         num_encoder_layers=6,
         nhead=8,
@@ -238,18 +236,9 @@ class ISLR_Transformer_Selector(nn.Module):
 
         frame_importance = torch.softmax(frame_scores, dim=1)
 
-        T = video_mask.float().sum(dim=1, keepdim=True).clamp(min=1.0)  # (B, 1)
-        threshold = 1.0 / T  # (B, 1)
+        weights = frame_importance.unsqueeze(-1)
+        pooled = (x * weights).sum(dim=1)
 
-        selected = (frame_importance > threshold) & video_mask  # (B, T)
-
-        # Fallback: nếu không có frame nào vượt ngưỡng, dùng toàn bộ valid frame
-        no_selection = ~selected.any(dim=1, keepdim=True)  # (B, 1)
-        selected = selected | (no_selection & video_mask)
-
-        # Mean pooling trên các frame được chọn
-        selected_float = selected.float().unsqueeze(-1)  # (B, T, 1)
-        pooled = (x * selected_float).sum(dim=1) / selected_float.sum(dim=1).clamp(min=1.0)
 
         logits = self.classifier(pooled)
 
@@ -261,7 +250,6 @@ class ISLR_Transformer_Selector(nn.Module):
             "logits": logits,
             "loss": loss,
             "frame_importance": frame_importance,
-            "selected_mask": selected,
             "encoded": x,
         }
 
@@ -637,7 +625,7 @@ class RGBEncoder(nn.Module):
         d_model=256,
         dropout=0.2,
         pretrained=True,
-        variant="vit_small",
+        variant="vit_tiny",
         img_size=112,
         drop_path=0.1,
     ):
@@ -675,9 +663,6 @@ class RGBEncoder(nn.Module):
 
         x = self.proj(x)                                    # (B, T, d_model)
 
-        # lengths = video_mask.sum(dim=1, keepdim=True).clamp(min=2).float()
-        # pos = torch.arange(T, device=x.device).float().unsqueeze(0)
-        # t = (pos / (lengths - 1)).clamp(max=1.0).unsqueeze(-1)
         return x
 
 class PoseRGBFusionModel(nn.Module):
@@ -820,7 +805,7 @@ class RGBModel(nn.Module):
         nhead=8,
         dropout=0.2,
         use_temporal=True,
-        rgb_backbone="vit_small",
+        rgb_backbone="vit_tiny",
         rgb_pretrained=True,
     ):
         super().__init__()

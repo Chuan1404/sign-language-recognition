@@ -1,5 +1,5 @@
 import numpy as np
-
+import torch
 from config import _COORD_DIM, _N_HAND, _N_POSE, _REMOVE_POSE_IDX
 
 NUM_JOINTS = _N_POSE + 2 * _N_HAND
@@ -79,8 +79,6 @@ class SkeletonAugmentor:
         fused = np.asarray(fused, dtype=np.float32)
         T, flat_dim = fused.shape[0], fused.shape[1]
 
-        # Feature layout: [position | shape | average] mỗi block = (N * _COORD_DIM)
-        # Tổng flat_dim = num_blocks * N * C  →  xác định num_blocks
         block_flat = NUM_JOINTS * _COORD_DIM  # 55 * 2 = 110
         num_blocks = flat_dim // block_flat  # 1 hoặc 3
         assert flat_dim % block_flat == 0, (
@@ -88,7 +86,6 @@ class SkeletonAugmentor:
             "Kiểm tra NUM_JOINTS/_COORD_DIM trong config."
         )
 
-        # Tách thành (T, num_blocks, N, C) để augment từng block chung 1 phép biến đổi
         blocks = fused.reshape(T, num_blocks, NUM_JOINTS, _COORD_DIM).copy()
 
         # present_mask dựa trên block đầu (position) — các block khác dùng chung
@@ -218,12 +215,10 @@ class AugmentedSkeletonDataset:
         self.num_augmentations = num_augmentations
         self.base_len = len(base_dataset)
         self._seed = seed
-        self._augmentor = augmentor  # may be None -> built lazily per worker
+        self._augmentor = augmentor
 
     def _get_augmentor(self):
         if self._augmentor is None:
-            import torch
-
             worker_info = torch.utils.data.get_worker_info()
             worker_id = worker_info.id if worker_info is not None else 0
             seed_seq = np.random.SeedSequence(self._seed).spawn(worker_id + 1)[-1]
@@ -235,20 +230,15 @@ class AugmentedSkeletonDataset:
         return self.base_len * (1 + self.num_augmentations)
 
     def __getitem__(self, idx):
-        if idx < 0 or idx >= len(self):
-            raise IndexError(idx)
-
         stride = 1 + self.num_augmentations
-        base_idx = idx // stride  # which original sample
-        variant = idx % stride  # 0 = original, 1..num_augmentations = augmented
+        base_idx = idx // stride
+        variant = idx % stride
 
-        feature, label, _ = self.base_dataset[base_idx]
-
+        feature, label, video_id = self.base_dataset[base_idx]
         if variant == 0:
-            return np.array(feature, dtype=np.float32, copy=True), label
+            return np.array(feature, dtype=np.float32, copy=True), label, video_id
 
         augmentor = self._get_augmentor()
-        feature_aug = augmentor(
-            feature
-        )  # augmentor copies internally, doesn't touch original
-        return feature_aug, label
+        feature_aug = augmentor(feature)
+
+        return feature_aug, label, video_id

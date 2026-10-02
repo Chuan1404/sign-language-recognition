@@ -1,6 +1,5 @@
 import os
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import argparse
@@ -10,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import DEVICE, ROOT
-from models import ISLR_Transformer_Selector
+from models import ISLR_Transformer
 from src.data.augmentation import AugmentedSkeletonDataset, SkeletonAugmentor
 from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.training.train import collate_fn, train_one_epoch, validate
@@ -51,11 +50,10 @@ def main(args):
         args.data_path, args.label_path, fusion_component, mode="test"
     )
 
-    _feature, _, _ = base_train[0]
-
     train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
     # train_dataset = base_train
     val_dataset = base_val
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
@@ -81,7 +79,7 @@ def main(args):
         "num_classes": num_classes,
     }
 
-    model = ISLR_Transformer_Selector(**model_kwargs).to(DEVICE)
+    model = ISLR_Transformer(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")

@@ -33,8 +33,6 @@ def default_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--top_k", type=int, default=2)
     p.add_argument("--patience", type=int, default=10)
-    p.add_argument("--folds", type=int, default=5,
-                   help=">=2: importance của train lấy từ model chưa thấy video đó (out-of-fold). 0: dùng model đầy đủ.")
     p.add_argument("--seed", type=int, default=42)
     return p
 
@@ -71,6 +69,7 @@ def fit_selector(model_kwargs, train_ds, val_loader, args, ckpt_path, tag):
             if no_improve >= args.patience:
                 print(f"[{tag}] Early stopping ở epoch {epoch + 1}")
                 break
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -110,19 +109,6 @@ def save_json(results, path):
     print(f"✓ Đã lưu {path}")
 
 
-# def make_folds(labels, k, seed):
-#     labels = np.asarray(labels)
-#     rng = np.random.RandomState(seed)
-#     fold_of = np.zeros(len(labels), dtype=np.int64)
-#     for c in np.unique(labels):
-#         idx = np.where(labels == c)[0]
-#         rng.shuffle(idx)
-#         offset = rng.randint(k)
-#         for j, i in enumerate(idx):
-#             fold_of[i] = (j + offset) % k
-#     return fold_of
-#
-
 def main(args):
     set_seed(args.seed)
     print(f"Device: {DEVICE}")
@@ -147,6 +133,7 @@ def main(args):
     print(f"\nTEST: loss {t_loss:.4f} | top1 {t1 * 100:.2f}% | top{args.top_k} {tk * 100:.2f}%")
 
     os.makedirs(IMPORTANCE_DIR, exist_ok=True)
+
     print("\nTrích importance cho val/test bằng model đầy đủ...")
     for name, ds in (("val", val_ds), ("test", test_ds)):
         res = extract_frame_importance(model, make_loader(ds, args.batch_size, False), DEVICE)
@@ -155,20 +142,6 @@ def main(args):
 
     print("\nTrích importance cho train...")
     train_res = extract_frame_importance(model, make_loader(train_ds, args.batch_size, False), DEVICE)
-    # if args.folds >= 2:
-    #     fold_of = make_folds(train_ds.labels, args.folds, args.seed)
-    #     train_res = {}
-    #     for k in range(args.folds):
-    #         tr_idx = np.where(fold_of != k)[0].tolist()
-    #         ho_idx = np.where(fold_of == k)[0].tolist()
-    #         ckpt = args.output.replace(".pt", f"_fold{k}.pt")
-    #         fold_model, _ = fit_selector(model_kwargs, Subset(train_ds, tr_idx), val_loader, args, ckpt, f"fold{k}")
-    #         train_res.update(
-    #             extract_frame_importance(fold_model, make_loader(Subset(train_ds, ho_idx), args.batch_size, False),
-    #                                      DEVICE))
-    # else:
-    #     print("⚠ --folds<2: importance của train lấy từ model đã học thuộc train => phân phối lệch so với val/test.")
-    #     train_res = extract_frame_importance(model, make_loader(train_ds, args.batch_size, False), DEVICE)
     summarize("train", train_res)
     save_json(train_res, importance_path("train"))
 

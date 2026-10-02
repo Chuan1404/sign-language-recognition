@@ -22,8 +22,6 @@ def _read_split(annotation_dir, mode):
 
 
 class _LandmarkBase(Dataset):
-    """Logic chung: đọc split, kiểm tra file, lấy nhãn, cache đặc trưng landmark."""
-
     _LANDMARK_KEYS = ("left_hand", "right_hand", "pose")
 
     def __init__(self, feature_dir, annotation_dir, fusion_component, mode="train", cache_landmarks=True):
@@ -118,14 +116,13 @@ class _LandmarkBase(Dataset):
 
 
 class WLASLLandmarksDataset(_LandmarkBase):
-    """Dùng cho selector: giữ nguyên toàn bộ T frame để chấm importance."""
-
     def __getitem__(self, idx):
         item = self.samples[idx]
-        return self._load_features(item), item["label"], item["video_name"]
+
+        feature = self._load_features(item)
+        return feature, item["label"], item["video_name"]
 
 def _sample_positions(n, max_frames, train):
-    """Chọn tối đa max_frames vị trí theo thứ tự thời gian. Train: mỗi đoạn lấy ngẫu nhiên (temporal jitter)."""
     if n <= max_frames:
         return None
     if train:
@@ -136,8 +133,6 @@ def _sample_positions(n, max_frames, train):
 
 
 def _augment_clip(x):
-    """x: float (T, 3, H, W) trong [0,1]. Cùng một phép biến đổi cho cả clip.
-    Không lật ngang vì đổi tay thuận thay đổi nghĩa/kết quả của ký hiệu."""
     _, _, H, W = x.shape
     scale = np.random.uniform(0.8, 1.0)
     ch, cw = int(round(H * scale)), int(round(W * scale))
@@ -155,13 +150,6 @@ def _augment_clip(x):
 
 
 class WLASLLandmarksRGBDataset(_LandmarkBase):
-    """Landmark + RGB đã chọn frame.
-
-    - RGB đọc từ <rgb_dir>/<video>/{rgb_frames.npy, indices.npy}.
-    - indices.npy cho biết mỗi frame RGB ứng với frame landmark nào; landmark được lấy đúng các
-      chỉ số đó nên pose[i] và rgb[i] LUÔN cùng thời điểm và cùng độ dài.
-    - max_frames được áp dụng thật (train: jitter ngẫu nhiên, eval: đều).
-    """
 
     def __init__(self, feature_dir, annotation_dir, rgb_dir, fusion_component, mode="train",
                  max_frames=MAX_FRAMES, augment=None, cache_landmarks=True):

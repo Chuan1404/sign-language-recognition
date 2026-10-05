@@ -71,11 +71,11 @@ def flatten_nslt():
 
         split = info["subset"].lower()
 
-        if split == "train":
+        if split == "train" or split == "val":
             train_entries.append(sample)
 
-        elif split == "val":
-            val_entries.append(sample)
+        # elif split == "val":
+        #     val_entries.append(sample)
 
         elif split == "test":
             test_entries.append(sample)

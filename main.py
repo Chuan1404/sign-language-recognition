@@ -9,9 +9,9 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import DEVICE, ROOT
-from models import ISLR_Transformer
+from src.models import ISLR_GCN, ISLR_Transformer, ISLR_Transformer_GCN
 from src.data.augmentation import AugmentedSkeletonDataset, SkeletonAugmentor
-from src.data.WSASL_raw import WLASLLandmarksDataset
+from src.data.WSASL_raw import WLASLLandmarksDataset, WLASLImportantLandmarksDataset
 from src.training.train import collate_fn, train_one_epoch, validate
 from src.utils import FusionComponent
 
@@ -34,8 +34,13 @@ def default_args():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--data_path", default=f"{DATA_PATH}")
     parser.add_argument("--label_path", default=f"{LABEL_DIR}")
-    # parser.add_argument("--config_path", default=f"{CONFIG_PATH}", help="Path to the train dataset")
     parser.add_argument("--output", default=f"{os.path.join(OUTPUT_DIR, MODEL_NAME)}")
+    parser.add_argument("--model", default="gcn", choices=["gcn", "transformer", "transformer_gcn"], help="Model architecture")
+    parser.add_argument("--only_important", action="store_true", default=True, help="Use only important frames")
+    parser.add_argument("--indices_dir", default=os.path.join(ROOT, "outputs", "selected_rgb"), help="Directory containing indices.npy")
+    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
+    parser.add_argument("--epochs", type=int, default=EPOCHS)
+    parser.add_argument("--lr", type=float, default=LR)
 
     return parser
 
@@ -43,12 +48,21 @@ def default_args():
 def main(args):
     fusion_component = FusionComponent()
 
-    base_train = WLASLLandmarksDataset(
-        args.data_path, args.label_path, fusion_component, mode="train"
-    )
-    base_val = WLASLLandmarksDataset(
-        args.data_path, args.label_path, fusion_component, mode="test"
-    )
+    if args.only_important:
+        print(f"Loading landmark datasets ONLY on important frames from: {args.indices_dir}")
+        base_train = WLASLImportantLandmarksDataset(
+            args.data_path, args.label_path, indices_dir=args.indices_dir, fusion_component=fusion_component, mode="train"
+        )
+        base_val = WLASLImportantLandmarksDataset(
+            args.data_path, args.label_path, indices_dir=args.indices_dir, fusion_component=fusion_component, mode="test"
+        )
+    else:
+        base_train = WLASLLandmarksDataset(
+            args.data_path, args.label_path, fusion_component=fusion_component, mode="train"
+        )
+        base_val = WLASLLandmarksDataset(
+            args.data_path, args.label_path, fusion_component=fusion_component, mode="test"
+        )
 
     train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
     # train_dataset = base_train
@@ -56,7 +70,7 @@ def main(args):
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=args.batch_size,
         shuffle=True,
         collate_fn=collate_fn,
         num_workers=0,
@@ -64,7 +78,7 @@ def main(args):
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=args.batch_size,
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=0,
@@ -79,13 +93,21 @@ def main(args):
         "num_classes": num_classes,
     }
 
-    model = ISLR_Transformer(**model_kwargs).to(DEVICE)
+    if args.model == "gcn":
+        print("Using model: ISLR_GCN")
+        model = ISLR_GCN(**model_kwargs).to(DEVICE)
+    elif args.model == "transformer_gcn":
+        print("Using model: ISLR_Transformer_GCN")
+        model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
+    else:
+        print("Using model: ISLR_Transformer")
+        model = ISLR_Transformer(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=LR, eps=1e-8, weight_decay=0.01
+        model.parameters(), lr=args.lr, eps=1e-8, weight_decay=0.01
     )
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(

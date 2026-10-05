@@ -69,7 +69,7 @@ def main():
     model = ISLR_Transformer(**model_kwargs).to(DEVICE)
     model.load_state_dict(ckpt["model"])
 
-    for split in ["train", "val", "test"]:
+    for split in ["train", "test"]:
         export_importance_for_split(model, split)
 
 

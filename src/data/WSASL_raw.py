@@ -1,25 +1,26 @@
 import json
 import os
+import re
 from collections import Counter
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from config import _COORD_DIM
-from pipeline_config import MAX_FRAMES
+from pipeline_config import IMAGE_SIZE, MAX_FRAMES
 from src.utils.rgb import normalize_imagenet
 
-RGB_CACHE_FILENAME = "rgb_frames.npy"   # (N, 3, H, W) uint8
-INDICES_FILENAME = "indices.npy"        # (N,) chỉ số frame trong không gian landmark (0..T-1)
+RGB_CACHE_FILENAME = "rgb_frames.npy"
+INDICES_FILENAME = "indices.npy"
 
 
 def _read_split(annotation_dir, mode):
     with open(os.path.join(annotation_dir, f"{mode}.json"), "r") as f:
         data = json.load(f)
-    return {str(d["video_id"]): d.get("gloss") for d in data}
-
+    return {str(d["video_id"]): d["gloss"] for d in data}
 
 class _LandmarkBase(Dataset):
     _LANDMARK_KEYS = ("left_hand", "right_hand", "pose")
@@ -65,13 +66,10 @@ class _LandmarkBase(Dataset):
 
         self._report()
 
-    # ---- hooks ----
     def _extra_sample_info(self, video_name):
         return {}, None
 
-    # ---- helpers ----
     def _resolve_gloss(self, video_name, gloss_ann, feat_dir):
-        """Ưu tiên gloss trong annotation (nguồn sự thật); fallback gloss.txt."""
         text_path = os.path.join(feat_dir, "gloss.txt")
         gloss_txt = None
         if os.path.exists(text_path):
@@ -98,6 +96,7 @@ class _LandmarkBase(Dataset):
     def _load_features(self, item):
         vid = item["video_name"]
         feats = self._feature_cache.get(vid)
+
         if feats is None:
             left = np.load(item["left_hand_path"])
             right = np.load(item["right_hand_path"])
@@ -106,7 +105,8 @@ class _LandmarkBase(Dataset):
             pose = pose.reshape(T, 33, 3)[:, :, :_COORD_DIM]
             left = left.reshape(T, 21, 3)[:, :, :_COORD_DIM]
             right = right.reshape(T, 21, 3)[:, :, :_COORD_DIM]
-            feats = self.fusion_component.fuse_follow_shape(pose, left, right)  # (T, D)
+
+            feats = self.fusion_component.fuse_follow_shape(pose, left, right)
             if self.cache_landmarks:
                 self._feature_cache[vid] = feats
         return feats
@@ -116,11 +116,100 @@ class _LandmarkBase(Dataset):
 
 
 class WLASLLandmarksDataset(_LandmarkBase):
+    def __init__(
+        self,
+        feature_dir,
+        annotation_dir,
+        fusion_component=None,
+        mode="train",
+        cache_landmarks=True,
+        indices_dir=None,
+        importance_json=None,
+        only_important_frames=False,
+    ):
+        self.indices_dir = indices_dir
+        self.importance_json = importance_json
+        self.only_important_frames = only_important_frames or (indices_dir is not None)
+        self.importance_data = None
+        if self.importance_json and os.path.exists(self.importance_json):
+            with open(self.importance_json, "r") as f:
+                self.importance_data = json.load(f)
+
+        if fusion_component is None:
+            try:
+                from src.utils import FusionComponent
+                fusion_component = FusionComponent()
+            except Exception:
+                pass
+
+        super().__init__(feature_dir, annotation_dir, fusion_component, mode, cache_landmarks)
+
+    def _extra_sample_info(self, video_name):
+        if self.only_important_frames and self.indices_dir:
+            idx_path = os.path.join(self.indices_dir, str(video_name), INDICES_FILENAME)
+            if os.path.exists(idx_path):
+                return {"indices_path": idx_path}, None
+            if self.importance_data and str(video_name) in self.importance_data:
+                return {"video_id_str": str(video_name)}, None
+            return None, "missing_indices"
+        return {}, None
+
     def __getitem__(self, idx):
         item = self.samples[idx]
-
         feature = self._load_features(item)
+
+        if self.only_important_frames:
+            if "indices_path" in item:
+                indices = np.load(item["indices_path"])
+                if len(indices) > 0 and indices.max() < len(feature):
+                    feature = feature[indices]
+                elif len(indices) > 0:
+                    valid_idx = indices[indices < len(feature)]
+                    if len(valid_idx) > 0:
+                        feature = feature[valid_idx]
+            elif self.importance_data and str(item["video_name"]) in self.importance_data:
+                scores = np.asarray(self.importance_data[str(item["video_name"])]["importance"])
+                T = len(feature)
+                k = int(np.sum(scores > (1.5 / max(T, 1))))
+                k = int(np.clip(k, min(8, T), min(100, T)))
+                top_indices = np.sort(np.argsort(-scores)[:k])
+                feature = feature[top_indices]
+
         return feature, item["label"], item["video_name"]
+
+
+class WLASLImportantLandmarksDataset(WLASLLandmarksDataset):
+    """
+    Dataset WLASL Landmarks trích xuất CHỈ TRÊN CÁC FRAME IMPORTANT.
+    Phục vụ trực tiếp cho mô hình GCN (như ISLR_GCN, ISLR_Transformer_GCN)
+    để chỉ học trên các frame chuyển động cử chỉ quan trọng.
+    """
+    def __init__(
+        self,
+        feature_dir,
+        annotation_dir,
+        indices_dir=None,
+        fusion_component=None,
+        mode="train",
+        cache_landmarks=True,
+        importance_json=None,
+    ):
+        if indices_dir is None:
+            try:
+                from pipeline_config import SELECTED_RGB_DIR
+                indices_dir = SELECTED_RGB_DIR
+            except Exception:
+                indices_dir = os.path.join("outputs", "selected_rgb")
+        super().__init__(
+            feature_dir=feature_dir,
+            annotation_dir=annotation_dir,
+            fusion_component=fusion_component,
+            mode=mode,
+            cache_landmarks=cache_landmarks,
+            indices_dir=indices_dir,
+            importance_json=importance_json,
+            only_important_frames=True,
+        )
 
 def _sample_positions(n, max_frames, train):
     if n <= max_frames:
@@ -133,7 +222,15 @@ def _sample_positions(n, max_frames, train):
 
 
 def _augment_clip(x):
-    _, _, H, W = x.shape
+    orig_shape = x.shape
+    if x.ndim == 5:
+        T, num_hands, C, H, W = orig_shape
+        x = x.reshape(T * num_hands, C, H, W)
+    elif x.ndim == 4:
+        T, C, H, W = orig_shape
+    else:
+        raise ValueError(f"Expected 4D or 5D tensor, got shape {orig_shape}")
+
     scale = np.random.uniform(0.8, 1.0)
     ch, cw = int(round(H * scale)), int(round(W * scale))
     top = np.random.randint(0, H - ch + 1)
@@ -146,7 +243,11 @@ def _augment_clip(x):
     x = x * brightness
     mean = x.mean()
     x = (x - mean) * contrast + mean
-    return x.clamp(0.0, 1.0)
+    x = x.clamp(0.0, 1.0)
+
+    if len(orig_shape) == 5:
+        x = x.reshape(orig_shape)
+    return x
 
 
 class WLASLLandmarksRGBDataset(_LandmarkBase):
@@ -172,7 +273,7 @@ class WLASLLandmarksRGBDataset(_LandmarkBase):
         item = self.samples[idx]
         feats = self._load_features(item)                     # (T, D)
         indices = np.load(item["indices_path"])               # (N,)
-        rgb = np.load(item["rgb_cache_path"], mmap_mode="r")  # (N, 3, H, W)
+        rgb = np.load(item["rgb_cache_path"], mmap_mode="r")  # (N, 3, H, W) or (N, 2, 3, H, W)
 
         if len(indices) != len(rgb):
             raise ValueError(f"{item['video_name']}: indices ({len(indices)}) != rgb ({len(rgb)})")
@@ -200,3 +301,179 @@ class WLASLLandmarksRGBDataset(_LandmarkBase):
             x = frames.float()  # cache cũ đã chuẩn hóa sẵn (float32)
 
         return feats, x, item["label"], item["video_name"]
+
+
+class WLASLTwoHandRGBDataset(_LandmarkBase):
+    def __init__(
+        self,
+        feature_dir,
+        annotation_dir,
+        rgb_dir,
+        fusion_component=None,
+        mode="train",
+        max_frames=MAX_FRAMES,
+        augment=None,
+        cache_landmarks=True,
+        image_size=IMAGE_SIZE,
+        return_tuple_hands=False,
+    ):
+        self.rgb_dir = rgb_dir
+        self.max_frames = max_frames
+        self.augment = (mode == "train") if augment is None else augment
+        self.image_size = image_size
+        self.return_tuple_hands = return_tuple_hands
+
+        if fusion_component is None:
+            try:
+                from src.utils import FusionComponent
+                fusion_component = FusionComponent()
+            except Exception:
+                pass
+
+        super().__init__(feature_dir, annotation_dir, fusion_component, mode, cache_landmarks)
+
+    def _find_image_pairs(self, video_name):
+        d = os.path.join(self.rgb_dir, str(video_name))
+        if not os.path.isdir(d):
+            return None, "missing_video_dir"
+
+        preview_dir = os.path.join(d, "preview")
+        search_dirs = [preview_dir, d] if os.path.isdir(preview_dir) else [d]
+
+        idx_path = os.path.join(d, INDICES_FILENAME)
+        has_idx_file = os.path.exists(idx_path)
+        cached_indices = np.load(idx_path) if has_idx_file else None
+
+        image_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+        for sdir in search_dirs:
+            if not os.path.isdir(sdir):
+                continue
+            all_files = os.listdir(sdir)
+            left_files = {}
+            for f in all_files:
+                f_lower = f.lower()
+                if any(f_lower.endswith(ext) for ext in image_exts):
+                    base, ext = os.path.splitext(f)
+                    if base.endswith("_left"):
+                        prefix = base[:-5]
+                        left_files[prefix] = (f, ext)
+
+            if left_files:
+                pairs = []
+                for prefix, (l_file, ext) in left_files.items():
+                    r_file = f"{prefix}_right{ext}"
+                    r_path = os.path.join(sdir, r_file) if os.path.exists(os.path.join(sdir, r_file)) else None
+                    l_path = os.path.join(sdir, l_file)
+
+                    m = re.search(r"(\d+)$", prefix)
+                    frame_idx = int(m.group(1)) if m else None
+                    pairs.append((frame_idx, prefix, l_path, r_path))
+
+                if all(p[0] is not None for p in pairs):
+                    pairs.sort(key=lambda p: p[0])
+                else:
+                    pairs.sort(key=lambda p: p[1])
+
+                indices = [p[0] if p[0] is not None else i for i, p in enumerate(pairs)]
+                return {
+                    "image_pairs": [(p[2], p[3]) for p in pairs],
+                    "indices": np.array(indices, dtype=np.int64),
+                    "indices_path": idx_path if has_idx_file else None,
+                }, None
+
+        # Fallback tới rgb_frames.npy nếu có
+        rgb_path = os.path.join(d, RGB_CACHE_FILENAME)
+        if os.path.exists(rgb_path) and has_idx_file:
+            return {
+                "rgb_cache_path": rgb_path,
+                "indices_path": idx_path,
+                "indices": cached_indices,
+            }, None
+
+        return None, "missing_two_hand_images(_left/_right)"
+
+    def _extra_sample_info(self, video_name):
+        return self._find_image_pairs(video_name)
+
+    def _load_hand_image(self, path):
+        if path is not None and os.path.exists(path):
+            img = cv2.imread(path)
+            if img is not None:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                if img.shape[0] != self.image_size or img.shape[1] != self.image_size:
+                    img = cv2.resize(img, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
+                return img.transpose(2, 0, 1)  # (3, H, W)
+        return np.zeros((3, self.image_size, self.image_size), dtype=np.uint8)
+
+    def __getitem__(self, idx):
+        item = self.samples[idx]
+        feats = self._load_features(item)
+
+        if "image_pairs" in item:
+            image_pairs = list(item["image_pairs"])
+            indices = np.array(item["indices"], dtype=np.int64)
+
+            if len(feats) > 0 and len(indices) > 0 and indices.max() >= len(feats):
+                valid = indices < len(feats)
+                indices = indices[valid]
+                image_pairs = [p for p, v in zip(image_pairs, valid) if v]
+
+            if len(image_pairs) == 0:
+                raise ValueError(f"{item['video_name']}: Không có frame hợp lệ sau khi lọc indices.")
+
+            positions = _sample_positions(len(image_pairs), self.max_frames, self.augment)
+            if positions is not None:
+                image_pairs = [image_pairs[p] for p in positions]
+                indices = indices[positions]
+
+            feats = feats[indices]
+
+            frames = []
+            for l_path, r_path in image_pairs:
+                l_img = self._load_hand_image(l_path)
+                r_img = self._load_hand_image(r_path)
+                frames.append(np.stack([l_img, r_img], axis=0))
+
+            rgb_arr = np.stack(frames, axis=0)  # (N_selected, 2, 3, H, W) uint8
+            frames_t = torch.from_numpy(np.ascontiguousarray(rgb_arr))
+            x = frames_t.float() / 255.0
+            if self.augment:
+                x = _augment_clip(x)
+            x = normalize_imagenet(x)
+
+        else:
+            indices = np.load(item["indices_path"])
+            rgb = np.load(item["rgb_cache_path"], mmap_mode="r")
+
+            if len(feats) > 0 and len(indices) > 0 and indices.max() >= len(feats):
+                valid = indices < len(feats)
+                indices = indices[valid]
+                rgb = rgb[valid]
+
+            feats = feats[indices]
+            positions = _sample_positions(len(indices), self.max_frames, self.augment)
+            if positions is not None:
+                feats = feats[positions]
+                rgb_arr = rgb[positions]
+            else:
+                rgb_arr = np.asarray(rgb)
+
+            frames_t = torch.from_numpy(np.ascontiguousarray(rgb_arr))
+            if frames_t.dtype == torch.uint8:
+                x = frames_t.float() / 255.0
+                if self.augment:
+                    x = _augment_clip(x)
+                x = normalize_imagenet(x)
+            else:
+                x = frames_t.float()
+
+        if self.return_tuple_hands:
+            # (T, 3, H, W), (T, 3, H, W)
+            return feats, (x[:, 0], x[:, 1]), item["label"], item["video_name"]
+
+        return feats, x, item["label"], item["video_name"]
+
+
+# Alias tiện dụng
+WLASLLandmarksTwoHandRGBDataset = WLASLTwoHandRGBDataset

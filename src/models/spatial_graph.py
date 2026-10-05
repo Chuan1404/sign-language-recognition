@@ -110,8 +110,11 @@ def build_adjacency_from_edges(edges, num_nodes):
     return A
 
 
-def build_adjacency():
-    return build_adjacency_from_edges(FULL_BODY_EDGES, _N_HAND * 2)
+def build_adjacency(num_nodes=None):
+    from config import _NUM_NODE
+    if num_nodes is None:
+        num_nodes = _NUM_NODE
+    return build_adjacency_from_edges(FULL_BODY_EDGES, num_nodes)
 
 
 def _normalize_adjacency(A):

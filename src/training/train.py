@@ -26,6 +26,12 @@ def collate_fn(batch):
 
     return features, labels, video_mask, video_ids
 
+def masked_mean_pool(x, video_mask):
+    mask = video_mask.unsqueeze(-1).float()  # (B, T, 1)
+    summed = (x * mask).sum(dim=1)  # (B, D)
+    counts = mask.sum(dim=1).clamp(min=1.0)  # (B, 1) — avoid /0
+    return summed / counts
+
 
 def collate_fn_rgb(batch):
     feats, rgbs, labels, video_id = zip(*batch)

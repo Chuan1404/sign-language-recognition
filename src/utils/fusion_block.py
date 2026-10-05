@@ -134,7 +134,6 @@ class FusionComponent:
         return v
 
     def fuse_follow_shape(self, pose_feature, left_feature, right_feature):
-
         T = pose_feature.shape[0]
 
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
@@ -145,6 +144,10 @@ class FusionComponent:
         right_present_mask = ~np.all(right == 0, axis=-1)
         pose_present_mask = ~np.all(pose == 0, axis=-1)
 
+        pose_root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
+        left_root = left[:, 0:1, :]
+        right_root = right[:, 0:1, :]
+
         scale = np.linalg.norm(
             pose[:, _LEFT_SHOULDER_IDX] - pose[:, _RIGHT_SHOULDER_IDX],
             axis=-1,
@@ -154,9 +157,6 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
 
         scale = scale[:, np.newaxis, :]
-        pose_root = pose[:, np.newaxis, _NOSE_IDX]
-        left_root = left[:, 0:1, :]
-        right_root = right[:, 0:1, :]
 
         pose = (pose - pose_root) / scale
         left = (left - left_root) / scale
@@ -167,6 +167,7 @@ class FusionComponent:
         pose = pose * pose_present_mask[..., None]
 
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
+
         fused_coords = np.concatenate([pose, left, right], axis=1)
         fused_flat = fused_coords.reshape(T, -1)  # (T, D)
 

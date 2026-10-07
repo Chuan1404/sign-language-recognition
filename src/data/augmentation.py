@@ -6,44 +6,43 @@ NUM_JOINTS = _N_POSE + 2 * _N_HAND
 
 _POSE_LR_PAIRS_RAW = [
     (11, 12),
-    (13, 14),  # shoulder, elbow, wrist
 ]
 
 
-def _build_swap_index():
-    swap = np.arange(NUM_JOINTS)
+# def _build_swap_index():
+#     swap = np.arange(NUM_JOINTS)
+#
+#     removed = set(_REMOVE_POSE_IDX)
+#     kept = [i for i in range(33) if i not in removed]
+#     old_to_new = {old: new for new, old in enumerate(kept)}
+#
+#     for left_old, right_old in _POSE_LR_PAIRS_RAW:
+#         l = old_to_new.get(left_old)
+#         r = old_to_new.get(right_old)
+#         if l is not None and r is not None:
+#             swap[l] = r
+#             swap[r] = l
+#         # if only one side survived the removal, leave it mapped to itself
+#
+#     n_pose_kept = len(kept)
+#     assert n_pose_kept == _N_POSE, (
+#         f"_N_POSE ({_N_POSE}) does not match pose points left after "
+#         f"_REMOVE_POSE_IDX removal ({n_pose_kept}). Check config."
+#     )
+#
+#     # 2) Hand blocks: swap the whole left-hand block with the whole
+#     # right-hand block, index-for-index (finger topology is identical,
+#     # only which array/hand it belongs to changes).
+#     left_start = n_pose_kept
+#     right_start = n_pose_kept + _N_HAND
+#     for i in range(_N_HAND):
+#         swap[left_start + i] = right_start + i
+#         swap[right_start + i] = left_start + i
+#
+#     return swap
 
-    removed = set(_REMOVE_POSE_IDX)
-    kept = [i for i in range(33) if i not in removed]
-    old_to_new = {old: new for new, old in enumerate(kept)}
 
-    for left_old, right_old in _POSE_LR_PAIRS_RAW:
-        l = old_to_new.get(left_old)
-        r = old_to_new.get(right_old)
-        if l is not None and r is not None:
-            swap[l] = r
-            swap[r] = l
-        # if only one side survived the removal, leave it mapped to itself
-
-    n_pose_kept = len(kept)
-    assert n_pose_kept == _N_POSE, (
-        f"_N_POSE ({_N_POSE}) does not match pose points left after "
-        f"_REMOVE_POSE_IDX removal ({n_pose_kept}). Check config."
-    )
-
-    # 2) Hand blocks: swap the whole left-hand block with the whole
-    # right-hand block, index-for-index (finger topology is identical,
-    # only which array/hand it belongs to changes).
-    left_start = n_pose_kept
-    right_start = n_pose_kept + _N_HAND
-    for i in range(_N_HAND):
-        swap[left_start + i] = right_start + i
-        swap[right_start + i] = left_start + i
-
-    return swap
-
-
-_SWAP_IDX = _build_swap_index()
+# _SWAP_IDX = _build_swap_index()
 
 
 class SkeletonAugmentor:
@@ -58,7 +57,7 @@ class SkeletonAugmentor:
         max_frame_dropout_ratio=0.1,
         speed_perturb_prob=0.8,
         speed_range=(0.8, 1.25),
-        enable_mirror=True,
+        enable_mirror=False,
         enable_noise=True,
         rng=None,
     ):
@@ -79,27 +78,16 @@ class SkeletonAugmentor:
         fused = np.asarray(fused, dtype=np.float32)
         T, flat_dim = fused.shape[0], fused.shape[1]
 
-        block_flat = NUM_JOINTS * _COORD_DIM  # 55 * 2 = 110
-        num_blocks = flat_dim // block_flat  # 1 hoặc 3
-        assert flat_dim % block_flat == 0, (
-            f"flat_dim={flat_dim} không chia hết cho block_flat={block_flat}. "
-            "Kiểm tra NUM_JOINTS/_COORD_DIM trong config."
-        )
+        flatten = NUM_JOINTS * _COORD_DIM  # 55 * 2 = 110
+        num_blocks = flat_dim // flatten  # 1 hoặc 3
 
         blocks = fused.reshape(T, num_blocks, NUM_JOINTS, _COORD_DIM).copy()
 
-        # present_mask dựa trên block đầu (position) — các block khác dùng chung
         present_mask = ~np.all(blocks[:, 0] == 0, axis=-1)  # (T, N)
 
-        # ── Speed perturbation (theo trục thời gian, áp dụng cho tất cả blocks) ──
-        if self.speed_perturb_prob > 0 and self.rng.random() < self.speed_perturb_prob:
-            blocks, present_mask = self._speed_perturb(blocks, present_mask)
-            T = blocks.shape[0]
-
-        # ── Mirror (hoán đổi node trái ↔ phải, lật x) ──
-        if self.enable_mirror and self.rng.random() < self.mirror_prob:
-            blocks = self._mirror(blocks)
-            present_mask = present_mask[:, _SWAP_IDX]
+        # if self.speed_perturb_prob > 0 and self.rng.random() < self.speed_perturb_prob:
+        #     blocks, present_mask = self._speed_perturb(blocks, present_mask)
+        #     T = blocks.shape[0]
 
         # ── Rotate & Scale (áp dụng đồng nhất cho tất cả blocks) ──
         blocks = self._rotate(blocks)
@@ -113,22 +101,20 @@ class SkeletonAugmentor:
         ):
             blocks = self._add_noise(blocks, present_mask)
 
-        # Zero-out các keypoint bị thiếu
         blocks = blocks * present_mask[:, None, :, None]  # broadcast: (T,1,N,1)
 
-        # Ghép lại thành flat (T, flat_dim) đúng layout gốc
         coords = blocks.reshape(T, flat_dim)
 
-        if self.frame_dropout_prob > 0 and self.rng.random() < self.frame_dropout_prob:
-            coords = self._drop_frames(coords)
+        # if self.frame_dropout_prob > 0 and self.rng.random() < self.frame_dropout_prob:
+        #     coords = self._drop_frames(coords)
 
         return coords.astype(np.float32)
 
-    def _mirror(self, blocks):
-        # blocks: (T, num_blocks, N, C) — hoán đổi node trái ↔ phải, lật trục x
-        blocks = blocks[:, :, _SWAP_IDX, :].copy()
-        blocks[..., 0] *= -1.0  # flip x axis (left ↔ right)
-        return blocks
+    # def _mirror(self, blocks):
+    #     # blocks: (T, num_blocks, N, C) — hoán đổi node trái ↔ phải, lật trục x
+    #     blocks = blocks[:, :, _SWAP_IDX, :].copy()
+    #     blocks[..., 0] *= -1.0  # flip x axis (left ↔ right)
+    #     return blocks
 
     def _rotate(self, coords):
         deg = self.rng.uniform(-self.rotation_deg, self.rotation_deg)
@@ -141,45 +127,34 @@ class SkeletonAugmentor:
             R = np.array([[cos, -sin, 0], [sin, cos, 0], [0, 0, 1]], dtype=np.float32)
         else:
             raise ValueError(f"Unsupported _COORD_DIM: {_COORD_DIM}")
-
         return coords @ R.T
 
-    def _speed_perturb(self, blocks, present_mask):
-        """Resample the sequence along the time axis to simulate the
-        action being performed faster or slower.
-
-        factor > 1.0  -> faster motion -> fewer output frames
-        factor < 1.0  -> slower motion -> more output frames
-
-        Coordinates are linearly interpolated between neighboring frames;
-        the presence mask is resampled with nearest-neighbor lookup since
-        it's boolean (a point is either tracked or not, no in-between).
-        """
-        T = blocks.shape[0]
-        if T <= 2:
-            return blocks, present_mask
-
-        factor = self.rng.uniform(*self.speed_range)
-        new_T = max(2, round(T / factor))
-        if new_T == T:
-            return blocks, present_mask
-
-        new_idx = np.linspace(0, T - 1, new_T)
-
-        idx_floor = np.floor(new_idx).astype(np.int64)
-        idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
-        # blocks có 4 dims (T, num_blocks, N, C) → frac cần shape (new_T, 1, 1, 1)
-        extra_dims = blocks.ndim - 1
-        frac = (new_idx - idx_floor).astype(np.float32).reshape(-1, *([1] * extra_dims))
-
-        blocks_new = (
-            blocks[idx_floor] * (1.0 - frac) + blocks[idx_ceil] * frac
-        ).astype(np.float32)
-
-        nearest_idx = np.round(new_idx).astype(np.int64)
-        mask_new = present_mask[nearest_idx]
-
-        return blocks_new, mask_new
+    # def _speed_perturb(self, blocks, present_mask):
+    #     T = blocks.shape[0]
+    #     if T <= 2:
+    #         return blocks, present_mask
+    #
+    #     factor = self.rng.uniform(*self.speed_range)
+    #     new_T = max(2, round(T / factor))
+    #     if new_T == T:
+    #         return blocks, present_mask
+    #
+    #     new_idx = np.linspace(0, T - 1, new_T)
+    #
+    #     idx_floor = np.floor(new_idx).astype(np.int64)
+    #     idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
+    #
+    #     extra_dims = blocks.ndim - 1
+    #     frac = (new_idx - idx_floor).astype(np.float32).reshape(-1, *([1] * extra_dims))
+    #
+    #     blocks_new = (
+    #         blocks[idx_floor] * (1.0 - frac) + blocks[idx_ceil] * frac
+    #     ).astype(np.float32)
+    #
+    #     nearest_idx = np.round(new_idx).astype(np.int64)
+    #     mask_new = present_mask[nearest_idx]
+    #
+    #     return blocks_new, mask_new
 
     def _scale(self, coords):
         lo, hi = self.scale_range
@@ -187,7 +162,6 @@ class SkeletonAugmentor:
         return coords * factor
 
     def _add_noise(self, blocks, present_mask):
-        # blocks: (T, num_blocks, N, C), present_mask: (T, N)
         noise = self.rng.normal(0.0, self.noise_std, size=blocks.shape).astype(
             np.float32
         )

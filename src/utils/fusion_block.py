@@ -88,7 +88,7 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
         scale = scale[:, np.newaxis, :]  # [T, 1, 1]
 
-        root = pose[:, np.newaxis, _NOSE_IDX]
+        root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] + pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
 
         pose = (pose - root) / scale
         left = (left - root) / scale

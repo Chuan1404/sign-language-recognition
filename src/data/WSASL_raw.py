@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 from config import _COORD_DIM
 from pipeline_config import IMAGE_SIZE, MAX_FRAMES
 from src.utils.rgb import normalize_imagenet
+from src.utils import FusionComponent
 
 RGB_CACHE_FILENAME = "rgb_frames.npy"
 INDICES_FILENAME = "indices.npy"
@@ -106,7 +107,10 @@ class _LandmarkBase(Dataset):
             left = left.reshape(T, 21, 3)[:, :, :_COORD_DIM]
             right = right.reshape(T, 21, 3)[:, :, :_COORD_DIM]
 
-            feats = self.fusion_component.fuse_follow_shape(pose, left, right)
+            position_feature = self.fusion_component.fuse_follow_position(pose, left, right)
+            shape_feature = self.fusion_component.fuse_follow_shape(pose, left, right)
+            # avr_feature = self.fusion_component.fuse(pose, left, right)
+            feats = (position_feature + shape_feature) / 2
             if self.cache_landmarks:
                 self._feature_cache[vid] = feats
         return feats
@@ -136,11 +140,8 @@ class WLASLLandmarksDataset(_LandmarkBase):
                 self.importance_data = json.load(f)
 
         if fusion_component is None:
-            try:
-                from src.utils import FusionComponent
-                fusion_component = FusionComponent()
-            except Exception:
-                pass
+            fusion_component = FusionComponent()
+
 
         super().__init__(feature_dir, annotation_dir, fusion_component, mode, cache_landmarks)
 

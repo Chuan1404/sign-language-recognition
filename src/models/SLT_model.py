@@ -4,16 +4,17 @@ from torch import nn
 
 from config import _COORD_DIM, _N_HAND, _N_POSE, _NUM_NODE
 from src.models.positional_encoding import PositionalEncoding
+from training.train import masked_mean_pool
 
 
 class ISLR_Transformer(nn.Module):
     def __init__(
         self,
-        hidden_dim=256,
-        num_encoder_layers=6,
+        hidden_dim=128,
+        num_encoder_layers=3,
         nhead=8,
-        dim_feedforward=256 * 8,
-        dropout=0.2,
+        dim_feedforward=128 * 8,
+        dropout=0.1,
         max_seq_len=5000,
         num_classes=1000,
     ):
@@ -23,17 +24,10 @@ class ISLR_Transformer(nn.Module):
         self.num_nodes = _NUM_NODE
 
         self.pose_projection = nn.Sequential(
-            nn.Linear(_N_POSE * _COORD_DIM, d_model),
+            nn.Linear(self.num_nodes * _COORD_DIM, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.LayerNorm(d_model),
-        )
-
-        self.hand_projection = nn.Sequential(
-            nn.Linear(_N_HAND * _COORD_DIM * 2, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model),
+            nn.LayerNorm(d_model)
         )
 
         self.pos_encoder = PositionalEncoding(
@@ -63,13 +57,8 @@ class ISLR_Transformer(nn.Module):
 
         video_mask = video_mask.bool()
 
-        pose_features = features[:, :, : _N_POSE * _COORD_DIM]
-        hand_features = features[:, :, _N_POSE * _COORD_DIM :]
+        x = self.pose_projection(features)
 
-        x_pose = self.pose_projection(pose_features)
-        x_hand = self.hand_projection(hand_features)
-
-        x = x_pose + x_hand
         x = self.pos_encoder(x)
         x = self.encoder(
             x,

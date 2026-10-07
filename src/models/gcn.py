@@ -5,19 +5,7 @@ from torch import nn
 from config import _COORD_DIM, _N_HAND, _N_POSE, _NUM_NODE
 from src.models.positional_encoding import PositionalEncoding
 from src.models.spatial_graph import GCNBlock, SelfPacingDroppingBlock, build_adjacency
-try:
-    from src.training.train import masked_mean_pool
-except ImportError:
-    try:
-        from training.train import masked_mean_pool
-    except ImportError:
-        def masked_mean_pool(x, video_mask=None):
-            if video_mask is None:
-                return x.mean(dim=1)
-            mask = video_mask.unsqueeze(-1).float()  # (B, T, 1)
-            summed = (x * mask).sum(dim=1)           # (B, D)
-            counts = mask.sum(dim=1).clamp(min=1.0)   # (B, 1)
-            return summed / counts
+from src.training.train import masked_mean_pool
 
 
 class ModelOutput(dict):
@@ -25,6 +13,7 @@ class ModelOutput(dict):
     attribute access: output.logits, output.loss,
     and dict access: output['logits'], output['loss'].
     """
+
     def __init__(self, logits=None, loss=None, **kwargs):
         super().__init__(logits=logits, loss=loss, **kwargs)
         self.__dict__ = self
@@ -49,9 +38,7 @@ class SpatialGCNBlock(nn.Module):
         super().__init__()
         self.p = p
         self.phi = nn.Linear(in_ch, out_ch)
-        self.A = nn.Parameter(
-            adjacency.clone().unsqueeze(0).repeat(p, 1, 1)
-        )  # (p, N, N)
+        self.A = nn.Parameter(adjacency.clone().unsqueeze(0).repeat(p, 1, 1))  # (p, N, N)
         self.bn = nn.BatchNorm1d(out_ch)
         self.act = nn.GELU()
         self.drop = nn.Dropout(dropout)
@@ -73,6 +60,7 @@ class SpatialGCNBlock(nn.Module):
         out = self.bn(out.reshape(B * T * N, -1)).reshape(B, T, N, -1)
         return self.drop(self.act(out))
 
+
 class ISLR_GCN(nn.Module):
     def __init__(self, channels=(32, 64, 128, 256), num_classes=2000):
         super().__init__()
@@ -83,17 +71,8 @@ class ISLR_GCN(nn.Module):
         channels = [_COORD_DIM, *channels]
         gcn_out_dim = channels[-1]
 
-        self.gcn_block = nn.ModuleList(
-            [
-                GCNBlock(
-                    in_ch=channels[i],
-                    out_ch=channels[i + 1],
-                    num_nodes=self.num_nodes,
-                    base_adjacency=self.adjacency_matrix,
-                )
-                for i in range(len(channels) - 1)
-            ]
-        )
+        self.gcn_block = nn.ModuleList([GCNBlock(in_ch=channels[i], out_ch=channels[i + 1], num_nodes=self.num_nodes,
+            base_adjacency=self.adjacency_matrix, ) for i in range(len(channels) - 1)])
 
         self.classifier = nn.Linear(gcn_out_dim, num_classes)
 
@@ -124,7 +103,8 @@ class ISLR_GCN(nn.Module):
             elif D >= self.num_nodes * _COORD_DIM:
                 features = features[:, :, : self.num_nodes * _COORD_DIM].reshape(B, T, self.num_nodes, _COORD_DIM)
             else:
-                raise ValueError(f"Feature dimension {D} is invalid for num_nodes={self.num_nodes}, coord_dim={_COORD_DIM}")
+                raise ValueError(
+                    f"Feature dimension {D} is invalid for num_nodes={self.num_nodes}, coord_dim={_COORD_DIM}")
         elif features.dim() == 4:
             B, T, N, C = features.shape
             if N != self.num_nodes or C != _COORD_DIM:
@@ -147,68 +127,31 @@ class ISLR_GCN(nn.Module):
 
         return ModelOutput(logits=logits, loss=loss)
 
+
 class ISLR_Transformer_GCN(nn.Module):
-    def __init__(
-        self,
-        gcn_channels=(128, 128, 256, 256),
-        d_model=256,
-        num_encoder_layers=6,
-        nhead=8,
-        dim_feedforward=256 * 8,
-        dropout=0.2,
-        max_seq_len=5000,
-        num_classes=1000,
-    ):
+    def __init__(self, gcn_channels=(64, 64, 128, 128), d_model=128, num_encoder_layers=3, nhead=8,
+            dim_feedforward=128 * 4, dropout=0.1, max_seq_len=5000, num_classes=1000, ):
         super().__init__()
         self.num_nodes = _NUM_NODE
 
         self.register_buffer("adjacency_matrix", build_adjacency())
         channels = [_COORD_DIM, *gcn_channels]
 
-        self.pose_projection = nn.Sequential(
-            nn.Linear(_N_POSE * _COORD_DIM, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model),
-        )
+        self.pose_projection = nn.Sequential(nn.Linear(self.num_nodes * _COORD_DIM, d_model), nn.GELU(),
+            nn.Dropout(dropout), nn.LayerNorm(d_model), )
 
-        self.hand_projection = nn.Sequential(
-            nn.Linear(_N_HAND * _COORD_DIM * 2, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model),
-        )
         self.gcn_block = nn.ModuleList(
-            [
-                SelfPacingDroppingBlock(
-                    channels[i], channels[i + 1], _N_HAND * 2, self.adjacency_matrix
-                )
-                for i in range(len(channels) - 1)
-            ]
-        )
+            [SelfPacingDroppingBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in
+                range(len(channels) - 1)])
 
-        self.pos_encoder = PositionalEncoding(
-            d_model=d_model, max_len=max_seq_len, dropout=dropout
-        )
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_encoder_layers
-        )
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
+            dropout=dropout, batch_first=True, norm_first=True, )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
         self.encoder_norm = nn.LayerNorm(d_model)
 
-        self.classifier = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Dropout(dropout),
-            nn.Linear(d_model, num_classes),
-        )
+        self.classifier = nn.Sequential(nn.LayerNorm(d_model), nn.Dropout(dropout), nn.Linear(d_model, num_classes), )
 
     def encode_gcn(self, features, video_mask):
 
@@ -222,17 +165,11 @@ class ISLR_Transformer_GCN(nn.Module):
     def encode_transformer(self, features, video_mask):
         B, T, _ = features.shape
 
-        pose_features = features[:, :, : _N_POSE * _COORD_DIM]
-        hand_features = features[:, :, _N_POSE * _COORD_DIM :]
+        # pose_features = features[:, :, : _N_POSE * _COORD_DIM]
+        # hand_features = features[:, :, _N_POSE * _COORD_DIM :]
 
-        x_gcn = self.encode_gcn(
-            features[:, :, _N_POSE * _COORD_DIM :]
-            .clone()
-            .reshape(B, T, _N_HAND * 2, _COORD_DIM),
-            video_mask,
-        )
-        x_pose = self.pose_projection(pose_features)
-        x_hand = self.hand_projection(hand_features)
+        x_gcn = self.encode_gcn(features.clone().reshape(B, T, -1, _COORD_DIM), video_mask, )
+        x_pose = self.pose_projection(features)
 
         # x = x_average                                     # best=73.00% loss=1.2133 75.00%
         # x = x_average + x_gcn                             # best=66.00% loss=1.4254 95.00%
@@ -250,7 +187,7 @@ class ISLR_Transformer_GCN(nn.Module):
         # x = x_shape + x_average + x_position + x_gcn      # best=71.00% loss=1.1394 78.00%
         # x = x_gcn                                           # best=62.00% loss=1.4346 66.00%
 
-        x = x_pose + x_hand + x_gcn
+        x = x_pose + x_gcn
         x = self.pos_encoder(x)
         x = self.encoder(x, src_key_padding_mask=~video_mask)
         return self.encoder_norm(x)  # (B, T, d_model)
@@ -270,7 +207,7 @@ class ISLR_Transformer_GCN(nn.Module):
             video_mask = video_mask.bool()
 
         if features.shape[-1] >= self.num_nodes * 4:
-            features = features[:, :, self.num_nodes * 2 : self.num_nodes * 4]
+            features = features[:, :, self.num_nodes * 2: self.num_nodes * 4]
 
         t = self.encode_transformer(features, video_mask)
 
@@ -281,5 +218,37 @@ class ISLR_Transformer_GCN(nn.Module):
         loss = None
         if labels is not None:
             loss = F.cross_entropy(logits, labels)
+
+        return ModelOutput(logits=logits, loss=loss)
+
+
+class ISLR_Remove_Node_By_GCN(nn.Module):
+    def __init__(self, channels=(4, 6), num_classes=2000):
+        super().__init__()
+
+        self.num_nodes = _NUM_NODE
+        self.num_classes = num_classes
+        self.register_buffer("adjacency_matrix", build_adjacency())
+
+        channels = [_COORD_DIM, *channels]
+        gcn_out_dim = channels[-1]
+
+        self.gcn_block = nn.ModuleList([GCNBlock(in_ch=channels[i], out_ch=channels[i + 1], num_nodes=self.num_nodes,
+            base_adjacency=self.adjacency_matrix, ) for i in range(len(channels) - 1)])
+
+        self.classifier = nn.Linear(gcn_out_dim, num_classes)
+
+    def forward(self, features, labels=None, video_mask=None):
+        print(f"feat: {features.shape}")
+        B, T, _ = features.shape
+
+        x = features.clone().reshape(B, T, self.num_nodes, -1)
+        for block in self.gcn_block:
+            x = block(x, video_mask)
+
+        print(f"x: {x.shape}")
+
+        logits = None
+        loss = None
 
         return ModelOutput(logits=logits, loss=loss)

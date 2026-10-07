@@ -35,8 +35,8 @@ def default_args():
     parser.add_argument("--data_path", default=f"{DATA_PATH}")
     parser.add_argument("--label_path", default=f"{LABEL_DIR}")
     parser.add_argument("--output", default=f"{os.path.join(OUTPUT_DIR, MODEL_NAME)}")
-    parser.add_argument("--model", default="gcn", choices=["gcn", "transformer", "transformer_gcn"], help="Model architecture")
-    parser.add_argument("--only_important", action="store_true", default=True, help="Use only important frames")
+    parser.add_argument("--model", default="transformer_gcn", choices=["gcn", "transformer", "transformer_gcn"], help="Model architecture")
+    parser.add_argument("--only_important", action="store_true", default=False, help="Use only important frames")
     parser.add_argument("--indices_dir", default=os.path.join(ROOT, "outputs", "selected_rgb"), help="Directory containing indices.npy")
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=EPOCHS)
@@ -133,7 +133,7 @@ def main(args):
         print(f"Test   top-1 acc : {val_top1_acc * 100:.2f}%")
         print(f"Val   top-{TOP_K} acc : {val_topk_acc * 100:.2f}%")
 
-        if val_top1_acc > best:
+        if val_loss < best_loss:
             no_improve = 0
             best = val_top1_acc
             best_loss = val_loss

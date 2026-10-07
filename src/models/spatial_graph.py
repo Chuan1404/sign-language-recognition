@@ -58,7 +58,7 @@ _POSE_BONES = [  # face
     (18, 20),
 ]
 
-CUSTOM_EDGES = [(0, 11), (0, 12)]  # nose -> shoulders
+CUSTOM_EDGES = []  # nose -> shoulders
 
 remove_set = set(_REMOVE_POSE_IDX)
 
@@ -92,15 +92,13 @@ if 15 in old_to_new:
 if 16 in old_to_new:
     wrist_links.append((old_to_new[16], _RIGHT_WRIST))
 
-FULL_BODY_EDGES = _LEFT_HAND_EDGES + _RIGHT_HAND_EDGES + wrist_links
-
+FULL_BODY_EDGES = pose_edges + _LEFT_HAND_EDGES + _RIGHT_HAND_EDGES + wrist_links
 # Sanity check
 n_nodes = n_pose_kept + 2 * _N_HAND
 assert all(0 <= a < n_nodes and 0 <= b < n_nodes for a, b in FULL_BODY_EDGES)
 assert len({tuple(sorted(e)) for e in FULL_BODY_EDGES}) == len(FULL_BODY_EDGES), (
     "duplicate edges"
 )
-
 
 def build_adjacency_from_edges(edges, num_nodes):
     A = torch.eye(num_nodes)
@@ -118,7 +116,6 @@ def build_adjacency(num_nodes=None):
 
 
 def _normalize_adjacency(A):
-    """D^{-1/2} A D^{-1/2}, dùng chung cho từng thành phần A_in / A_out."""
     deg = A.sum(dim=1).clamp(min=1e-6)
     d_inv_sqrt = torch.diag(deg.pow(-0.5))
     return d_inv_sqrt @ A @ d_inv_sqrt
@@ -201,7 +198,7 @@ class MultiScaleTemporalConv(nn.Module):
 
 
 class GCNBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, dropout=0.0):
+    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, dropout=0.1):
         super().__init__()
 
         self.register_buffer("I", torch.eye(num_nodes))
@@ -234,13 +231,26 @@ class GCNBlock(nn.Module):
         m = None if mask is None else mask[:, :, None, None].to(features.dtype)
 
         res = self.residual(features)
-        x = self.linear(features)
 
+        print("========= ORIGIN ============")
+        torch.set_printoptions(threshold=float('inf'))
+        print(features[0, 0, 0])
+        # Source - https://stackoverflow.com/a/68079548
+        # Posted by tropulus, modified by community. See post 'Timeline' for change history
+        # Retrieved 2026-10-07, License - CC BY-SA 4.0
+
+
+        x = self.linear(features)
+        print("========= BEFORE ============")
+        print(x[0, 0, 0])
         x = torch.einsum("vw,btwc->btvc", self._normalized_A(), x)
+        print("========= AFTER ============")
+        print(x[0, 0, 0])
         x = self.act(x)
 
         if m is not None:
             x = x * m
+
         x = self.tcn(x)
         x = self.drop(x)
 

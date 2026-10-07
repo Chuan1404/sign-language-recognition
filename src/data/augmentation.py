@@ -182,6 +182,136 @@ class SkeletonAugmentor:
         keep_mask[drop_idx] = False
         return coords_flat[keep_mask]
 
+class RelativeHandSkeletonAugmentor:
+    """Input/output: (T, 85), gồm [flag, left_hand, right_hand]."""
+
+    def __init__(
+        self,
+        rotation_deg=10.0,
+        scale_range=(0.95, 1.05),
+        noise_std=0.005,
+        noise_prob=0.5,
+        mirror_prob=0.0,
+        speed_perturb_prob=0.5,
+        speed_range=(0.8, 1.25),
+        frame_dropout_prob=0.0,
+        max_frame_dropout_ratio=0.1,
+        rng=None,
+    ):
+        self.rotation_deg = rotation_deg
+        self.scale_range = scale_range
+        self.noise_std = noise_std
+        self.noise_prob = noise_prob
+        self.mirror_prob = mirror_prob
+        self.speed_perturb_prob = speed_perturb_prob
+        self.speed_range = speed_range
+        self.frame_dropout_prob = frame_dropout_prob
+        self.max_frame_dropout_ratio = max_frame_dropout_ratio
+        self.rng = rng if rng is not None else np.random.default_rng()
+
+    def __call__(self, fused):
+        fused = np.array(fused, dtype=np.float32, copy=True)
+
+        if fused.ndim != 2 or fused.shape[1] != 85:
+            raise ValueError(
+                f"Expected feature shape (T, 85), got {fused.shape}"
+            )
+
+        if len(fused) == 0:
+            return fused
+
+        # Resample nguyên hàng: flag và hai tay luôn đồng bộ.
+        if self.rng.random() < self.speed_perturb_prob:
+            fused = self._speed_perturb(fused)
+
+        if self.rng.random() < self.frame_dropout_prob:
+            fused = self._drop_frames(fused)
+
+        T = len(fused)
+        flag = fused[:, :1].copy()
+        hands = fused[:, 1:].reshape(T, 2, 21, 2).copy()
+
+        # Sau wrist normalization, wrist hợp lệ cũng bằng 0.
+        # Chỉ dùng mask này cho các điểm khác wrist.
+        present_mask = np.any(hands != 0, axis=-1)
+        present_mask[:, :, 0] = False
+
+        # Mirror cả clip: đổi tay trái/phải và đảo trục x.
+        if self.rng.random() < self.mirror_prob:
+            hands = hands[:, ::-1].copy()
+            present_mask = present_mask[:, ::-1].copy()
+            hands[..., 0] *= -1.0
+
+        # Một góc rotation cho tất cả frame và cả hai tay.
+        angle = np.deg2rad(
+            self.rng.uniform(-self.rotation_deg, self.rotation_deg)
+        )
+        cos, sin = np.cos(angle), np.sin(angle)
+        rotation = np.array(
+            [[cos, -sin], [sin, cos]],
+            dtype=np.float32,
+        )
+        hands = hands @ rotation.T
+
+        # Một scale chung để giữ tỷ lệ giữa hai tay.
+        scale = self.rng.uniform(*self.scale_range)
+        hands *= scale
+
+        if (
+            self.noise_std > 0
+            and self.rng.random() < self.noise_prob
+        ):
+            noise = self.rng.normal(
+                0.0, self.noise_std, size=hands.shape
+            ).astype(np.float32)
+
+            hands += noise * present_mask[..., None]
+
+        # Giữ các điểm thiếu và wrist bằng 0.
+        hands = np.where(present_mask[..., None], hands, 0.0)
+        hands[:, :, 0, :] = 0.0
+
+        # Không clip: rotation/scale có thể vượt [-1, 1].
+        return np.concatenate(
+            [flag, hands.reshape(T, 84)],
+            axis=1,
+        ).astype(np.float32)
+
+    def _speed_perturb(self, fused):
+        T = len(fused)
+        if T <= 2:
+            return fused
+
+        speed = self.rng.uniform(*self.speed_range)
+        new_T = max(2, int(round(T / speed)))
+
+        indices = np.rint(
+            np.linspace(0, T - 1, new_T)
+        ).astype(np.int64)
+
+        return fused[indices].copy()
+
+    def _drop_frames(self, fused):
+        T = len(fused)
+        if T <= 2:
+            return fused
+
+        max_drop = min(
+            int(T * self.max_frame_dropout_ratio),
+            T - 2,
+        )
+        if max_drop < 1:
+            return fused
+
+        n_drop = int(self.rng.integers(1, max_drop + 1))
+        drop_indices = self.rng.choice(
+            T, size=n_drop, replace=False
+        )
+
+        keep = np.ones(T, dtype=bool)
+        keep[drop_indices] = False
+
+        return fused[keep].copy()
 
 class AugmentedSkeletonDataset:
     def __init__(self, base_dataset, augmentor=None, num_augmentations=1, seed=None):

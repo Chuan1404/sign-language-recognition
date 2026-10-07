@@ -1,15 +1,15 @@
-import json
 import os
-import sys, argparse
+import argparse
+import json
 
 import torch
 from torch.utils.data import DataLoader
 
 from config import ROOT, DEVICE
-from data.WSASL_raw import WLASLLandmarksDataset
-from models.gcn import ISLR_Remove_Node_By_GCN
-from src import FusionComponent
-from training.train import train_one_epoch, collate_fn, validate
+from src.data.WSASL_raw import WLASLLandmarksDataset, WLASLImportantLandmarksDataset
+from src.models.gcn import ISLR_Remove_Node_By_GCN
+from src.utils import FusionComponent
+from src.training.train import train_one_epoch, collate_fn, validate
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
@@ -31,6 +31,7 @@ def default_args():
 
     parser.add_argument("--data_path", type=str, default=DATA_PATH)
     parser.add_argument("--label_path", type=str, default=LABEL_DIR)
+    parser.add_argument("--output", type=str, default=os.path.join(OUTPUT_DIR, MODEL_NAME))
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--lr", type=float, default=LR)

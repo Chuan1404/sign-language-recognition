@@ -107,17 +107,20 @@ class _LandmarkBase(Dataset):
             left = left.reshape(T, 21, 3)[:, :, :_COORD_DIM]
             right = right.reshape(T, 21, 3)[:, :, :_COORD_DIM]
 
-            position_feature = self.fusion_component.fuse_follow_position(pose, left, right)
-            shape_feature = self.fusion_component.fuse_follow_shape(pose, left, right)
+            # position_feature = self.fusion_component.fuse_follow_position(pose, left, right)
+            # shape_feature = self.fusion_component.fuse_follow_shape(pose, left, right)
             # avr_feature = self.fusion_component.fuse(pose, left, right)
-            feats = (position_feature + shape_feature) / 2
+
+            shape_feature = self.fusion_component.fuse_relatively(pose, left, right)
+            position_feature = self.fusion_component.fuse_position_relatively(pose, left, right)
+            origin = self.fusion_component.fuse_relatively_origin(pose, left, right)
+            feats = origin
             if self.cache_landmarks:
                 self._feature_cache[vid] = feats
         return feats
 
     def __len__(self):
         return len(self.samples)
-
 
 class WLASLLandmarksDataset(_LandmarkBase):
     def __init__(
@@ -178,6 +181,31 @@ class WLASLLandmarksDataset(_LandmarkBase):
 
         return feature, item["label"], item["video_name"]
 
+class WLASLRelatively(_LandmarkBase):
+    def __init__(
+        self,
+        feature_dir,
+        annotation_dir,
+        fusion_component=None,
+        mode="train",
+        cache_landmarks=True,
+        indices_dir=None,
+        importance_json=None,
+        only_important_frames=False,
+    ):
+        self.indices_dir = indices_dir
+        self.importance_json = importance_json
+        self.only_important_frames = only_important_frames or (indices_dir is not None)
+        self.importance_data = None
+        if self.importance_json and os.path.exists(self.importance_json):
+            with open(self.importance_json, "r") as f:
+                self.importance_data = json.load(f)
+
+        if fusion_component is None:
+            fusion_component = FusionComponent()
+
+
+        super().__init__(feature_dir, annotation_dir, fusion_component, mode, cache_landmarks)
 
 class WLASLImportantLandmarksDataset(WLASLLandmarksDataset):
     """

@@ -1,6 +1,7 @@
 import os
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+import numpy as np
+from data.augmentation import RelativeHandSkeletonAugmentor
+from models import ISLR_Transformer_Relative, ISLR_Transformer_GCN_Relative
 
 import argparse
 import json
@@ -35,7 +36,7 @@ def default_args():
     parser.add_argument("--data_path", default=f"{DATA_PATH}")
     parser.add_argument("--label_path", default=f"{LABEL_DIR}")
     parser.add_argument("--output", default=f"{os.path.join(OUTPUT_DIR, MODEL_NAME)}")
-    parser.add_argument("--model", default="transformer_gcn", choices=["gcn", "transformer", "transformer_gcn"], help="Model architecture")
+    parser.add_argument("--model", default="transformer", choices=["gcn", "transformer", "transformer_gcn"], help="Model architecture")
     parser.add_argument("--only_important", action="store_true", default=False, help="Use only important frames")
     parser.add_argument("--indices_dir", default=os.path.join(ROOT, "outputs", "selected_rgb"), help="Directory containing indices.npy")
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
@@ -64,7 +65,13 @@ def main(args):
             args.data_path, args.label_path, fusion_component=fusion_component, mode="test"
         )
 
-    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    train_dataset = AugmentedSkeletonDataset(
+        base_train,
+        augmentor=RelativeHandSkeletonAugmentor(
+            rng=np.random.default_rng(42),
+        ),
+    )
     # train_dataset = base_train
     val_dataset = base_val
 
@@ -95,13 +102,13 @@ def main(args):
 
     if args.model == "gcn":
         print("Using model: ISLR_GCN")
-        model = ISLR_GCN(**model_kwargs).to(DEVICE)
+        model = ISLR_Transformer_GCN_Relative(**model_kwargs).to(DEVICE)
     elif args.model == "transformer_gcn":
         print("Using model: ISLR_Transformer_GCN")
-        model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
+        model = ISLR_Transformer_GCN_Relative(**model_kwargs).to(DEVICE)
     else:
-        print("Using model: ISLR_Transformer")
-        model = ISLR_Transformer(**model_kwargs).to(DEVICE)
+        # model = ISLR_Transformer(**model_kwargs).to(DEVICE)
+        model = ISLR_Transformer_Relative(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")

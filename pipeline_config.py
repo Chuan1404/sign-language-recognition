@@ -14,7 +14,7 @@ MODEL_DIR = os.path.join(ROOT, "outputs", "models")
 SELECTED_RGB_DIR = os.path.join(ROOT, "outputs", "selected_rgb")
 IMPORTANCE_DIR = os.path.join(ROOT, "outputs", "frame_importance")
 
-IMAGE_SIZE = 112
+IMAGE_SIZE = 224
 MAX_FRAMES = 100
 MIN_FRAMES = 8
 

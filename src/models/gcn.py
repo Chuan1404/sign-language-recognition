@@ -56,7 +56,8 @@ class ISLR_GCN(nn.Module):
         super().__init__()
 
         self.num_nodes = _NUM_NODE
-        self.register_buffer("adjacency_matrix", build_adjacency(self.num_nodes))
+        self.A_in, self.A_out = build_direction_adjacency_from_edges(HAND_EDGES, num_nodes=self.num_nodes, )
+        self.register_buffer("adjacency_matrix", self.A_in)
 
         channels = [_COORD_DIM, *channels]
         gcn_out_dim = channels[-1]
@@ -115,18 +116,26 @@ class ISLR_GCN(nn.Module):
 
 class ISLR_Transformer_GCN(nn.Module):
     def __init__(self, gcn_channels=(64, 64, 128, 128), d_model=128, num_encoder_layers=3, nhead=8,
-                 dim_feedforward=128 * 4, dropout=0.1, max_seq_len=5000, num_classes=1000, ):
+                 dim_feedforward=128 * 8, dropout=0.1, max_seq_len=5000, num_classes=1000, ):
         super().__init__()
         self.num_nodes = _NUM_NODE
 
-        self.register_buffer("adjacency_matrix", build_adjacency())
+        self.A_in, self.A_out = build_direction_adjacency_from_edges(HAND_EDGES, num_nodes=self.num_nodes, )
+        self.register_buffer("adjacency_matrix", self.A_in)
         channels = [_COORD_DIM, *gcn_channels]
 
-        self.pose_projection = nn.Sequential(nn.Linear(self.num_nodes * _COORD_DIM, d_model), nn.GELU(),
-                                             nn.Dropout(dropout), nn.LayerNorm(d_model), )
+        self.feature_dim = self.num_nodes * _COORD_DIM
+
+        def make_projection():
+            return nn.Sequential(nn.Linear(self.feature_dim, d_model), nn.GELU(), nn.Dropout(dropout),
+                nn.LayerNorm(d_model), )
+
+        self.shape_projection = make_projection()
+        self.average_projection = make_projection()
+        self.position_projection = make_projection()
 
         self.gcn_block = nn.ModuleList(
-            [SelfPacingDroppingBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in
+            [GCNBlock(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix) for i in
              range(len(channels) - 1)])
 
         self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
@@ -138,6 +147,13 @@ class ISLR_Transformer_GCN(nn.Module):
 
         self.classifier = nn.Sequential(nn.LayerNorm(d_model), nn.Dropout(dropout), nn.Linear(d_model, num_classes), )
 
+        self.frame_importance_head = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, 1),
+        )
+
     def encode_gcn(self, features, video_mask):
 
         for block in self.gcn_block:
@@ -148,13 +164,23 @@ class ISLR_Transformer_GCN(nn.Module):
         return features
 
     def encode_transformer(self, features, video_mask):
-        B, T, _ = features.shape
+        video_mask = video_mask.to(
+            device=features.device,
+            dtype=torch.bool,
+        )
 
-        # pose_features = features[:, :, : _N_POSE * _COORD_DIM]
-        # hand_features = features[:, :, _N_POSE * _COORD_DIM :]
+        B, T, D = features.shape
 
-        x_gcn = self.encode_gcn(features.clone().reshape(B, T, -1, _COORD_DIM), video_mask, )
-        x_pose = self.pose_projection(features)
+        shape_feature, average_feature, position_feature = torch.split(features, self.feature_dim, dim=-1, )
+
+        x_shape = self.shape_projection(shape_feature)
+        x_average = self.average_projection(average_feature)
+        x_position = self.position_projection(position_feature)
+
+        # Giữ nhánh GCN hiện tại, đầu vào là shape feature.
+        x_gcn = self.encode_gcn(shape_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
+
+        x = x_shape + x_average + x_position + x_gcn
 
         # x = x_average                                     # best=73.00% loss=1.2133 75.00%
         # x = x_average + x_gcn                             # best=66.00% loss=1.4254 95.00%
@@ -169,42 +195,44 @@ class ISLR_Transformer_GCN(nn.Module):
         # x = x_shape + x_average + x_gcn                   # best=71.00% loss=1.1686 74.00
 
         # x = x_shape + x_average + x_position  # best=75.00% loss=1.0840 77.00%
-        # x = x_shape + x_average + x_position + x_gcn      # best=71.00% loss=1.1394 78.00%
+        # x = x_shape + x_average + x_position + x_gcn      # best=75.00% loss=1.1256 78.00%
         # x = x_gcn                                           # best=62.00% loss=1.4346 66.00%
 
-        x = x_pose + x_gcn
         x = self.pos_encoder(x)
-        x = self.encoder(x, src_key_padding_mask=~video_mask)
-        return self.encoder_norm(x)  # (B, T, d_model)
+        x = self.encoder(x, src_key_padding_mask=~video_mask, )
 
-    def forward(self, features, labels=None, video_mask=None, important_indices=None):
-        if important_indices is not None:
-            if isinstance(important_indices, (list, tuple)):
-                important_indices = torch.as_tensor(important_indices, dtype=torch.long, device=features.device)
-            if torch.is_tensor(important_indices) and important_indices.dim() == 1:
-                features = features[:, important_indices]
-                if video_mask is not None:
-                    video_mask = video_mask[:, important_indices]
+        return self.encoder_norm(x)
+
+    def forward(self, features, labels=None, video_mask=None):
 
         if video_mask is None:
-            video_mask = torch.ones((features.shape[0], features.shape[1]), dtype=torch.bool, device=features.device)
+            video_mask = torch.ones(
+                features.shape[:2], dtype=torch.bool, device=features.device
+            )
         else:
-            video_mask = video_mask.bool()
-
-        if features.shape[-1] >= self.num_nodes * 4:
-            features = features[:, :, self.num_nodes * 2: self.num_nodes * 4]
+            video_mask = video_mask.to(device=features.device, dtype=torch.bool)
+        if not video_mask.any(dim=1).all():
+            raise ValueError("Each video must have at least one valid frame")
 
         t = self.encode_transformer(features, video_mask)
+        important_score = self.frame_importance_head(t).squeeze(-1)
+        important_score = important_score.masked_fill(~video_mask, float("-inf"))
+        frame_importance = torch.softmax(important_score, dim=1)
 
-        t = masked_mean_pool(t, video_mask)  # (B, d_model)
-
-        logits = self.classifier(t)
+        # Weighted pooling lets classification loss train the importance head.
+        pooled = (t * frame_importance.unsqueeze(-1)).sum(dim=1)
+        logits = self.classifier(pooled)
 
         loss = None
         if labels is not None:
             loss = F.cross_entropy(logits, labels)
 
-        return ModelOutput(logits=logits, loss=loss)
+        return ModelOutput(
+            logits=logits, loss=loss,
+            important_score=important_score,
+            frame_importance=frame_importance,
+            encoded=t,
+        )
 
 
 class ISLR_Remove_Node_By_GCN(nn.Module):

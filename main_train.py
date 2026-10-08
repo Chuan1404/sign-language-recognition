@@ -25,7 +25,7 @@ MODEL_NAME = "stage2_pose_rgb_contrastive.pt"
 STAGE1_CKPT = os.path.join(ROOT, "outputs", "models", "stage1_pose_rgb_contrastive.pt")
 
 LR = 1e-4
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 EPOCHS = 100
 TOP_K = 5
 PATIENCE = 15
@@ -73,7 +73,7 @@ def main(args):
 
     model_kwargs = {"num_classes": num_classes}
     # model = RGBModel(**model_kwargs).to(DEVICE)
-    model = TwoHandRGBModel(rgb_backbone="resnet18", temporal="opticalflow", **model_kwargs).to(DEVICE)
+    model = TwoHandRGBModel(rgb_backbone="resnet18", temporal="bilstm", **model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

@@ -1,4 +1,9 @@
 import os
+import sys
+
+# Support running this script directly from the project root.
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path[:0] = [PROJECT_DIR, os.path.join(PROJECT_DIR, "src")]
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -13,13 +18,16 @@ import numpy as np
 from pipeline_config import (DATA_PATH, IMAGE_SIZE, MAX_FRAMES, MIN_FRAMES, RAW_VIDEO_DIR, SELECTED_RGB_DIR,
                              importance_path, set_seed, )
 from src.utils.rgb import bgr_to_chw_uint8, square_box
+from config import DEVICE
+from pipeline_config import LABEL_DIR, MODEL_DIR
+
 
 
 def select_indices(strategy, scores, T, min_frames, max_frames, fixed_k, rng):
     if fixed_k:
         k = min(int(fixed_k), T)
     elif strategy == "selector":
-        k = int(np.sum(scores > (1.5 / T)))
+        k = int(np.sum(scores > (1 / T)))
         k = int(np.clip(k, min(min_frames, T), min(max_frames, T)))
     else:
         k = min(max_frames, T)
@@ -30,6 +38,29 @@ def select_indices(strategy, scores, T, min_frames, max_frames, fixed_k, rng):
     if strategy == "random":
         return np.sort(rng.choice(T, size=k, replace=False))
     return np.unique(np.linspace(0, T - 1, k).round().astype(np.int64))
+
+
+def smooth_indices(indices, max_gap=3, max_frames=100):
+    """Insert real intermediate frames, keeping all selected anchors.
+
+    Split the largest gap first. The frame budget takes priority over max_gap.
+    max_gap=0 disables smoothing.
+    """
+    indices = np.unique(np.asarray(indices, dtype=np.int64))
+    if max_gap < 0 or max_frames < 1:
+        raise ValueError("max_gap must be nonnegative and max_frames positive")
+    if len(indices) > max_frames:
+        raise ValueError("Selected anchors exceed max_frames")
+    if max_gap == 0:
+        return indices
+    while len(indices) > 1 and len(indices) < max_frames:
+        gaps = np.diff(indices)
+        i = int(np.argmax(gaps))
+        if gaps[i] <= max_gap:
+            break
+        midpoint = (int(indices[i]) + int(indices[i + 1])) // 2
+        indices = np.insert(indices, i + 1, midpoint)
+    return indices
 
 
 def read_all_frames(path):
@@ -183,9 +214,18 @@ def process_video(video_id, meta, args, rng, stats):
     T = len(scores)
     indices = select_indices(args.strategy, scores, T, args.min_frames, args.max_frames, args.fixed_k, rng)
 
+    indices = smooth_indices(
+        indices, max_gap=getattr(args, "max_frame_gap", 3),
+        max_frames=args.max_frames,
+    )
+
     frames = read_all_frames(video_path)
     if not frames:
         stats["skipped_empty_video"] += 1
+        return
+
+    if len(indices) == 0 or indices[-1] >= len(frames):
+        stats["skipped_frame_length_mismatch"] += 1
         return
 
     h, w = frames[0].shape[:2]
@@ -258,6 +298,67 @@ def process_video(video_id, meta, args, rng, stats):
     stats["frames_selected"] += len(indices)
 
 
+def load_score_model(checkpoint_path, label_path):
+    import torch
+    from src.models import ISLR_Transformer_GCN
+    with open(os.path.join(label_path, "gloss2idx.json"), encoding="utf-8") as f:
+        num_classes = len(json.load(f))
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    kwargs = dict(checkpoint.get("model_kwargs", {"num_classes": num_classes}))
+    if kwargs.get("num_classes", num_classes) != num_classes:
+        raise ValueError("Checkpoint class count does not match label_path")
+    model = ISLR_Transformer_GCN(**kwargs)
+    model.load_state_dict(checkpoint["model"], strict=True)
+    return model.to(DEVICE).eval()
+
+
+def extract_frame_scores(model, dataset, batch_size, device):
+    import torch
+    from torch.utils.data import DataLoader
+    from src.training.train import collate_fn
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
+                        collate_fn=collate_fn, num_workers=0)
+    results = {}
+    # Learned importance head; no ground-truth label is used to choose frames.
+    with torch.inference_mode():
+        for features, _labels, video_mask, video_ids in loader:
+            mask = video_mask.to(device=device, dtype=torch.bool)
+            scores = model(features.to(device), video_mask=mask)["frame_importance"].cpu()
+            for i, video_id in enumerate(video_ids):
+                length = int(video_mask[i].sum())
+                results[str(video_id)] = {
+                    "importance": scores[i, :length].tolist(),
+                    "length": length,
+                }
+    return results
+
+
+def score_requested_splits(args):
+    from src.data.WSASL_raw import WLASLLandmarksDataset
+    from src.utils import FusionComponent
+    print(f"Loading score checkpoint: {args.checkpoint}")
+    model = load_score_model(args.checkpoint, args.label_path)
+    combined = {}
+    for split in args.splits:
+        annotation_path = os.path.join(args.label_path, f"{split}.json")
+        with open(annotation_path, encoding="utf-8") as f:
+            annotations = json.load(f)
+        if not annotations:
+            print(f"Skipping empty split: {split}")
+            continue
+        dataset = WLASLLandmarksDataset(
+            args.data_path, args.label_path, FusionComponent(), mode=split
+        )
+        results = extract_frame_scores(model, dataset, args.batch_size, DEVICE)
+        path = importance_path(split)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(results, f)
+        print(f"Scores: {split}, {len(results)} videos -> {path}")
+        combined.update(results)
+    return combined
+
+
 def main(args):
     set_seed(args.seed)
     rng = np.random.RandomState(args.seed)
@@ -268,18 +369,23 @@ def main(args):
     # }
     # meta_path = os.path.join(args.out_dir, "_meta.json")
 
+    if args.reuse_scores:
+        importance = {}
+        for split in args.splits:
+            path = importance_path(split)
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    importance.update(json.load(f))
+    else:
+        importance = score_requested_splits(args)
+    if not importance:
+        raise ValueError("No frame scores available for requested splits")
+
     if args.overwrite and os.path.exists(args.out_dir):
         print(f"--overwrite: xoá {args.out_dir}")
         shutil.rmtree(args.out_dir)
 
     os.makedirs(args.out_dir, exist_ok=True)
-
-    importance = {}
-    for split in args.splits:
-        p = importance_path(split)
-        if os.path.exists(p):
-            with open(p) as f:
-                importance.update(json.load(f))
 
     stats = Counter()
     for i, (video_id, meta) in enumerate(importance.items(), 1):
@@ -294,11 +400,18 @@ def main(args):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(description="Checkpoint -> frame scores -> gap filling -> RGB cache")
+    p.add_argument("--checkpoint", default=os.path.join(MODEL_DIR, "contest_100_selector_v1.pt"))
+    p.add_argument("--label_path", default=LABEL_DIR)
+    p.add_argument("--batch_size", type=int, default=8)
+    p.add_argument("--reuse_scores", action="store_true",
+                   help="Skip checkpoint inference and use existing importance JSON files")
     p.add_argument("--strategy", choices=["selector", "uniform", "random"], default="selector")
-    p.add_argument("--fixed_k", type=int, default=0, help="Fixed frame count for all videos")
+    p.add_argument("--fixed_k", type=int, default=10, help="Fixed frame count for all videos")
     p.add_argument("--min_frames", type=int, default=MIN_FRAMES)
     p.add_argument("--max_frames", type=int, default=MAX_FRAMES)
+    p.add_argument("--max_frame_gap", type=int, default=3,
+                   help="Insert intermediate frames until gaps <= this value or max_frames reached; 0 disables")
     p.add_argument("--crop", choices=["none", "signer", "hands", "hand"], default="hands",
                    help="Crop mode: none, signer, or hands/hand")
     p.add_argument("--image_size", type=int, default=IMAGE_SIZE,
@@ -308,7 +421,7 @@ if __name__ == "__main__":
     p.add_argument("--data_path", default=DATA_PATH)
     p.add_argument("--video_dir", default=RAW_VIDEO_DIR)
     p.add_argument("--out_dir", default=SELECTED_RGB_DIR)
-    p.add_argument("--overwrite", action="store_true", default=True)
+    p.add_argument("--overwrite", action="store_true", default=False)
     p.add_argument("--save_jpg", action="store_true", default=True)
     p.add_argument("--seed", type=int, default=42)
     main(p.parse_args())

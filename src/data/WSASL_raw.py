@@ -9,10 +9,12 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from config import _COORD_DIM
+from config import _COORD_DIM, _NUM_NODE
 from pipeline_config import IMAGE_SIZE, MAX_FRAMES
 from src.utils.rgb import normalize_imagenet
 from src.utils import FusionComponent
+
+NUM_JOINTS = _NUM_NODE
 
 RGB_CACHE_FILENAME = "rgb_frames.npy"
 INDICES_FILENAME = "indices.npy"
@@ -102,21 +104,32 @@ class _LandmarkBase(Dataset):
             left = np.load(item["left_hand_path"])
             right = np.load(item["right_hand_path"])
             pose = np.load(item["pose_path"])
+
             T = left.shape[0]
+
             pose = pose.reshape(T, 33, 3)[:, :, :_COORD_DIM]
             left = left.reshape(T, 21, 3)[:, :, :_COORD_DIM]
             right = right.reshape(T, 21, 3)[:, :, :_COORD_DIM]
 
-            # position_feature = self.fusion_component.fuse_follow_position(pose, left, right)
-            # shape_feature = self.fusion_component.fuse_follow_shape(pose, left, right)
-            # avr_feature = self.fusion_component.fuse(pose, left, right)
+            shape_feature = self.fusion_component.fuse_follow_shape(
+                pose, left, right
+            )
+            average_feature = self.fusion_component.fuse(
+                pose, left, right
+            )
+            position_feature = self.fusion_component.fuse_follow_position(
+                pose, left, right
+            )
 
-            shape_feature = self.fusion_component.fuse_relatively(pose, left, right)
-            position_feature = self.fusion_component.fuse_position_relatively(pose, left, right)
-            origin = self.fusion_component.fuse_relatively_origin(pose, left, right)
-            feats = origin
+            # Mỗi block có D = _NUM_NODE * _COORD_DIM.
+            feats = np.concatenate(
+                [shape_feature, average_feature, position_feature],
+                axis=-1,
+            ).astype(np.float32)
+
             if self.cache_landmarks:
                 self._feature_cache[vid] = feats
+
         return feats
 
     def __len__(self):
@@ -329,6 +342,20 @@ class WLASLLandmarksRGBDataset(_LandmarkBase):
         else:
             x = frames.float()  # cache cũ đã chuẩn hóa sẵn (float32)
 
+        leading_shape = x.shape[:-3]
+
+        x = F.interpolate(
+            x.reshape(-1, *x.shape[-3:]),
+            size=(112, 112),
+            mode="bilinear",
+            align_corners=False,
+            antialias=True,
+        )
+
+        x = x.reshape(*leading_shape, 3, 112, 112)
+
+        return feats, x, item["label"], item["video_name"]
+
         return feats, x, item["label"], item["video_name"]
 
 
@@ -503,6 +530,138 @@ class WLASLTwoHandRGBDataset(_LandmarkBase):
 
         return feats, x, item["label"], item["video_name"]
 
+class MultiFeatureSkeletonAugmentor:
+    """Feature: (T, 3 * NUM_JOINTS * _COORD_DIM).
+    Thứ tự block: [shape, average, position].
+    """
+
+    def __init__(
+        self,
+        rotation_deg=10.0,
+        scale_range=(0.9, 1.1),
+        noise_std=0.005,
+        noise_prob=0.5,
+        speed_perturb_prob=0.5,
+        speed_range=(0.8, 1.25),
+        frame_dropout_prob=0.0,
+        max_frame_dropout_ratio=0.1,
+        rng=None,
+    ):
+        self.rotation_deg = rotation_deg
+        self.scale_range = scale_range
+        self.noise_std = noise_std
+        self.noise_prob = noise_prob
+        self.speed_perturb_prob = speed_perturb_prob
+        self.speed_range = speed_range
+        self.frame_dropout_prob = frame_dropout_prob
+        self.max_frame_dropout_ratio = max_frame_dropout_ratio
+        self.rng = rng if rng is not None else np.random.default_rng()
+
+    def __call__(self, fused):
+        fused = np.array(fused, dtype=np.float32, copy=True)
+
+        block_dim = NUM_JOINTS * _COORD_DIM
+        expected_dim = 3 * block_dim
+
+        if fused.ndim != 2 or fused.shape[1] != expected_dim:
+            raise ValueError(
+                f"Expected (T, {expected_dim}), got {fused.shape}"
+            )
+
+        if len(fused) == 0:
+            return fused
+
+        # Lấy nguyên frame để cả ba block luôn đồng bộ.
+        if self.rng.random() < self.speed_perturb_prob:
+            fused = self._speed_perturb(fused)
+
+        if self.rng.random() < self.frame_dropout_prob:
+            fused = self._drop_frames(fused)
+
+        T = len(fused)
+        blocks = fused.reshape(T, 3, NUM_JOINTS, _COORD_DIM)
+
+        # Một góc xoay và một scale chung cho cả clip.
+        angle = np.deg2rad(
+            self.rng.uniform(-self.rotation_deg, self.rotation_deg)
+        )
+        cos, sin = np.cos(angle), np.sin(angle)
+
+        if _COORD_DIM == 2:
+            rotation = np.array(
+                [[cos, -sin], [sin, cos]],
+                dtype=np.float32,
+            )
+        elif _COORD_DIM == 3:
+            rotation = np.array(
+                [[cos, -sin, 0],
+                 [sin, cos, 0],
+                 [0, 0, 1]],
+                dtype=np.float32,
+            )
+        else:
+            raise ValueError(f"Unsupported coord dim: {_COORD_DIM}")
+
+        # Giữ các vector 0: có thể là điểm thiếu hoặc điểm gốc.
+        nonzero_mask = np.any(blocks != 0, axis=-1)
+
+        blocks = blocks @ rotation.T
+        blocks *= self.rng.uniform(*self.scale_range)
+
+        if (
+            self.noise_std > 0
+            and self.rng.random() < self.noise_prob
+        ):
+            # Noise chung theo joint giữa ba block.
+            noise = self.rng.normal(
+                0.0,
+                self.noise_std,
+                size=(T, 1, NUM_JOINTS, _COORD_DIM),
+            ).astype(np.float32)
+
+            blocks += noise * nonzero_mask[..., None]
+
+        blocks = np.where(
+            nonzero_mask[..., None], blocks, 0.0
+        )
+
+        return blocks.reshape(T, expected_dim).astype(np.float32)
+
+    def _speed_perturb(self, fused):
+        T = len(fused)
+        if T <= 2:
+            return fused
+
+        speed = self.rng.uniform(*self.speed_range)
+        new_T = max(2, int(round(T / speed)))
+
+        indices = np.rint(
+            np.linspace(0, T - 1, new_T)
+        ).astype(np.int64)
+
+        return fused[indices].copy()
+
+    def _drop_frames(self, fused):
+        T = len(fused)
+        if T <= 2:
+            return fused
+
+        max_drop = min(
+            int(T * self.max_frame_dropout_ratio),
+            T - 2,
+        )
+        if max_drop < 1:
+            return fused
+
+        n_drop = int(self.rng.integers(1, max_drop + 1))
+        drop_indices = self.rng.choice(
+            T, size=n_drop, replace=False
+        )
+
+        keep = np.ones(T, dtype=bool)
+        keep[drop_indices] = False
+
+        return fused[keep].copy()
 
 # Alias tiện dụng
 WLASLLandmarksTwoHandRGBDataset = WLASLTwoHandRGBDataset

@@ -1,4 +1,9 @@
 import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
+
+from src.models import ISLR_Transformer_GCN
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -8,12 +13,12 @@ import json
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 
 from config import DEVICE
 from pipeline_config import (DATA_PATH, IMPORTANCE_DIR, LABEL_DIR, MODEL_DIR, importance_path, set_seed, )
-from src.data.WSASL_raw import WLASLLandmarksDataset
-from src.models.SLT_model import ISLR_Transformer_Selector
+from src.data.WSASL_raw import WLASLLandmarksDataset, MultiFeatureSkeletonAugmentor
+from src.data.augmentation import AugmentedSkeletonDataset
 from src.training.train import collate_fn, train_one_epoch_selector, validate_selector
 from src.utils import FusionComponent
 
@@ -25,8 +30,7 @@ def default_args():
     p.add_argument("--data_path", default=DATA_PATH)
     p.add_argument("--label_path", default=LABEL_DIR)
     p.add_argument("--output", default=os.path.join(MODEL_DIR, MODEL_NAME))
-    p.add_argument("--val_mode", default="val", help="split dùng để early-stop/chọn checkpoint")
-    p.add_argument("--allow_test_as_val", action="store_true")
+    p.add_argument("--val_mode", default="test", help="split dùng để early-stop/chọn checkpoint")
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -42,13 +46,17 @@ def make_loader(ds, batch_size, shuffle):
 
 
 def fit_selector(model_kwargs, train_ds, val_loader, args, ckpt_path, tag):
-    loader = make_loader(train_ds, args.batch_size, True)
-    model = ISLR_Transformer_Selector(**model_kwargs).to(DEVICE)
+    augmented_train = AugmentedSkeletonDataset(
+        train_ds,
+        MultiFeatureSkeletonAugmentor(rng=np.random.default_rng(args.seed)),
+    )
+    loader = make_loader(augmented_train, args.batch_size, True)
+    model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, eps=1e-8, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=1e-6)
 
     best_loss, best_info, no_improve = float("inf"), None, 0
-    os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(ckpt_path)), exist_ok=True)
 
     for epoch in range(args.epochs):
         train_loss, train_acc = train_one_epoch_selector(model, loader, optimizer, DEVICE)
@@ -111,15 +119,19 @@ def save_json(results, path):
 
 def main(args):
     set_seed(args.seed)
+    if args.epochs < 1:
+        raise ValueError("epochs must be positive")
     print(f"Device: {DEVICE}")
     fusion = FusionComponent()
 
     train_ds = WLASLLandmarksDataset(args.data_path, args.label_path, fusion, mode="train")
-    val_ds = WLASLLandmarksDataset(args.data_path, args.label_path, fusion, mode="val")
     test_ds = WLASLLandmarksDataset(args.data_path, args.label_path, fusion, mode="test")
 
-    val_loader = make_loader(val_ds, args.batch_size, False)
     test_loader = make_loader(test_ds, args.batch_size, False)
+    val_ds = test_ds if args.val_mode == "test" else WLASLLandmarksDataset(
+        args.data_path, args.label_path, fusion, mode=args.val_mode
+    )
+    val_loader = make_loader(val_ds, args.batch_size, False)
 
     with open(os.path.join(args.label_path, "gloss2idx.json"), "r") as f:
         num_classes = len(json.load(f))
@@ -135,10 +147,14 @@ def main(args):
     os.makedirs(IMPORTANCE_DIR, exist_ok=True)
 
     print("\nTrích importance cho val/test bằng model đầy đủ...")
-    for name, ds in (("val", val_ds), ("test", test_ds)):
-        res = extract_frame_importance(model, make_loader(ds, args.batch_size, False), DEVICE)
-        summarize(name, res)
-        save_json(res, importance_path(name))
+    # for name, ds in ("test", test_ds):
+    #     res = extract_frame_importance(model, make_loader(ds, args.batch_size, False), DEVICE)
+    #     summarize(name, res)
+    #     save_json(res, importance_path(name)
+
+    res = extract_frame_importance(model, make_loader(test_ds, args.batch_size, False), DEVICE)
+    summarize("test", res)
+    save_json(res, importance_path("test"))
 
     print("\nTrích importance cho train...")
     train_res = extract_frame_importance(model, make_loader(train_ds, args.batch_size, False), DEVICE)

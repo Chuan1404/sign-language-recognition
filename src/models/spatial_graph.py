@@ -236,9 +236,9 @@ class SelfPacingDroppingBlock(nn.Module):
         feat, _A_raw = self.gcn(x)
         if m is not None:
             feat = feat * m
-        feat = self.tcn(feat)
-        if m is not None:
-            feat = feat * m
+        # feat = self.tcn(feat)
+        # if m is not None:
+        #     feat = feat * m
 
         return feat
 

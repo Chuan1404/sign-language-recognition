@@ -49,11 +49,11 @@ class SkeletonAugmentor:
     def __init__(
         self,
         mirror_prob=0.3,
-        rotation_deg=13.0,
-        scale_range=(0.9, 1.1),
+        rotation_deg=15.0,
+        scale_range=(0.8, 1.2),
         noise_std=0.01,
         noise_prob=0.5,
-        frame_dropout_prob=0.0,
+        frame_dropout_prob=0.1,
         max_frame_dropout_ratio=0.1,
         speed_perturb_prob=0.8,
         speed_range=(0.8, 1.25),
@@ -129,32 +129,32 @@ class SkeletonAugmentor:
             raise ValueError(f"Unsupported _COORD_DIM: {_COORD_DIM}")
         return coords @ R.T
 
-    # def _speed_perturb(self, blocks, present_mask):
-    #     T = blocks.shape[0]
-    #     if T <= 2:
-    #         return blocks, present_mask
-    #
-    #     factor = self.rng.uniform(*self.speed_range)
-    #     new_T = max(2, round(T / factor))
-    #     if new_T == T:
-    #         return blocks, present_mask
-    #
-    #     new_idx = np.linspace(0, T - 1, new_T)
-    #
-    #     idx_floor = np.floor(new_idx).astype(np.int64)
-    #     idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
-    #
-    #     extra_dims = blocks.ndim - 1
-    #     frac = (new_idx - idx_floor).astype(np.float32).reshape(-1, *([1] * extra_dims))
-    #
-    #     blocks_new = (
-    #         blocks[idx_floor] * (1.0 - frac) + blocks[idx_ceil] * frac
-    #     ).astype(np.float32)
-    #
-    #     nearest_idx = np.round(new_idx).astype(np.int64)
-    #     mask_new = present_mask[nearest_idx]
-    #
-    #     return blocks_new, mask_new
+    def _speed_perturb(self, blocks, present_mask):
+        T = blocks.shape[0]
+        if T <= 2:
+            return blocks, present_mask
+
+        factor = self.rng.uniform(*self.speed_range)
+        new_T = max(2, round(T / factor))
+        if new_T == T:
+            return blocks, present_mask
+
+        new_idx = np.linspace(0, T - 1, new_T)
+
+        idx_floor = np.floor(new_idx).astype(np.int64)
+        idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
+
+        extra_dims = blocks.ndim - 1
+        frac = (new_idx - idx_floor).astype(np.float32).reshape(-1, *([1] * extra_dims))
+
+        blocks_new = (
+            blocks[idx_floor] * (1.0 - frac) + blocks[idx_ceil] * frac
+        ).astype(np.float32)
+
+        nearest_idx = np.round(new_idx).astype(np.int64)
+        mask_new = present_mask[nearest_idx]
+
+        return blocks_new, mask_new
 
     def _scale(self, coords):
         lo, hi = self.scale_range
@@ -314,7 +314,7 @@ class RelativeHandSkeletonAugmentor:
         return fused[keep].copy()
 
 class AugmentedSkeletonDataset:
-    def __init__(self, base_dataset, augmentor=None, num_augmentations=1, seed=None):
+    def __init__(self, base_dataset, augmentor=None, num_augmentations=3, seed=None):
         self.base_dataset = base_dataset
         self.num_augmentations = num_augmentations
         self.base_len = len(base_dataset)

@@ -1,7 +1,10 @@
 import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 import numpy as np
-from data.augmentation import RelativeHandSkeletonAugmentor
-from models import ISLR_Transformer_Relative, ISLR_Transformer_GCN_Relative
+
+from src.data.WSASL_raw import MultiFeatureSkeletonAugmentor
 
 import argparse
 import json
@@ -10,9 +13,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from config import DEVICE, ROOT
+from pipeline_config import set_seed
 from src.models import ISLR_GCN, ISLR_Transformer, ISLR_Transformer_GCN
-from src.data.augmentation import AugmentedSkeletonDataset, SkeletonAugmentor
-from src.data.WSASL_raw import WLASLLandmarksDataset, WLASLImportantLandmarksDataset
+from src.data.augmentation import AugmentedSkeletonDataset
+from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.training.train import collate_fn, train_one_epoch, validate
 from src.utils import FusionComponent
 
@@ -36,9 +40,12 @@ def default_args():
     parser.add_argument("--data_path", default=f"{DATA_PATH}")
     parser.add_argument("--label_path", default=f"{LABEL_DIR}")
     parser.add_argument("--output", default=f"{os.path.join(OUTPUT_DIR, MODEL_NAME)}")
-    parser.add_argument("--model", default="transformer", choices=["gcn", "transformer", "transformer_gcn"], help="Model architecture")
-    parser.add_argument("--only_important", action="store_true", default=False, help="Use only important frames")
-    parser.add_argument("--indices_dir", default=os.path.join(ROOT, "outputs", "selected_rgb"), help="Directory containing indices.npy")
+    parser.add_argument("--model", default="transformer_gcn", choices=["gcn", "transformer", "transformer_gcn"], help="Model architecture")
+    parser.add_argument("--val_mode", default="test")
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--top_k", type=int, default=TOP_K)
+    parser.add_argument("--patience", type=int, default=PATIENCE)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--lr", type=float, default=LR)
@@ -47,32 +54,22 @@ def default_args():
 
 
 def main(args):
+    set_seed(args.seed)
+    if args.epochs < 1:
+        raise ValueError("epochs must be positive")
     fusion_component = FusionComponent()
-
-    if args.only_important:
-        print(f"Loading landmark datasets ONLY on important frames from: {args.indices_dir}")
-        base_train = WLASLImportantLandmarksDataset(
-            args.data_path, args.label_path, indices_dir=args.indices_dir, fusion_component=fusion_component, mode="train"
-        )
-        base_val = WLASLImportantLandmarksDataset(
-            args.data_path, args.label_path, indices_dir=args.indices_dir, fusion_component=fusion_component, mode="test"
-        )
-    else:
-        base_train = WLASLLandmarksDataset(
-            args.data_path, args.label_path, fusion_component=fusion_component, mode="train"
-        )
-        base_val = WLASLLandmarksDataset(
-            args.data_path, args.label_path, fusion_component=fusion_component, mode="test"
-        )
-
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
+    base_train = WLASLLandmarksDataset(
+        args.data_path, args.label_path,
+        fusion_component=fusion_component, mode="train"
+    )
+    base_val = WLASLLandmarksDataset(
+        args.data_path, args.label_path,
+        fusion_component=fusion_component, mode=args.val_mode
+    )
     train_dataset = AugmentedSkeletonDataset(
         base_train,
-        augmentor=RelativeHandSkeletonAugmentor(
-            rng=np.random.default_rng(42),
-        ),
+        MultiFeatureSkeletonAugmentor(rng=np.random.default_rng(args.seed)),
     )
-    # train_dataset = base_train
     val_dataset = base_val
 
     train_loader = DataLoader(
@@ -92,7 +89,7 @@ def main(args):
         pin_memory=True,
     )
 
-    with open(os.path.join(LABEL_DIR, "gloss2idx.json"), "r") as f:
+    with open(os.path.join(args.label_path, "gloss2idx.json"), "r") as f:
         gloss2idx = json.load(f)
 
     num_classes = len(gloss2idx)
@@ -102,19 +99,21 @@ def main(args):
 
     if args.model == "gcn":
         print("Using model: ISLR_GCN")
-        model = ISLR_Transformer_GCN_Relative(**model_kwargs).to(DEVICE)
+        model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
     elif args.model == "transformer_gcn":
         print("Using model: ISLR_Transformer_GCN")
-        model = ISLR_Transformer_GCN_Relative(**model_kwargs).to(DEVICE)
+        model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
     else:
-        # model = ISLR_Transformer(**model_kwargs).to(DEVICE)
-        model = ISLR_Transformer_Relative(**model_kwargs).to(DEVICE)
+        model = ISLR_Transformer(**model_kwargs).to(DEVICE)
+        # model = ISLR_Transformer_Relative(**model_kwargs).to(DEVICE)
+        # model = ISLR_Transformer_Selector(**model_kwargs).to(DEVICE)
+
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, eps=1e-8, weight_decay=0.01
+        model.parameters(), lr=args.lr, eps=1e-8, weight_decay=args.weight_decay
     )
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -122,23 +121,27 @@ def main(args):
     )
 
     best = 0
-    best_loss = 100
+    best_loss = float("inf")
     no_improve = 0
 
-    for epoch in range(EPOCHS):
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+
+    for epoch in range(args.epochs):
         print(f"Epoch {epoch}")
 
         torch.cuda.empty_cache()
 
         train_loss = train_one_epoch(model, train_loader, optimizer, device=DEVICE)
         val_loss, val_top1_acc, val_topk_acc = validate(
-            model, val_loader, top_k=TOP_K, device=DEVICE
+            model, val_loader, top_k=args.top_k, device=DEVICE
         )
 
+        scheduler.step(val_loss)
+
         print(f"Train loss      : {train_loss:.4f}")
-        print(f"Test   loss      : {val_loss:.4f}")
-        print(f"Test   top-1 acc : {val_top1_acc * 100:.2f}%")
-        print(f"Val   top-{TOP_K} acc : {val_topk_acc * 100:.2f}%")
+        print(f"Val    loss      : {val_loss:.4f}")
+        print(f"Val    top-1 acc : {val_top1_acc * 100:.2f}%")
+        print(f"Val   top-{args.top_k} acc : {val_topk_acc * 100:.2f}%")
 
         if val_loss < best_loss:
             no_improve = 0
@@ -150,21 +153,21 @@ def main(args):
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "epoch": epoch,
-                    "test_loss": val_loss,
-                    "test_top1_acc": val_top1_acc,
-                    "test_topk_acc": val_topk_acc,
+                    "val_loss": val_loss,
+                    "val_top1_acc": val_top1_acc,
+                    "val_topk_acc": val_topk_acc,
                     "model_kwargs": model_kwargs,
                 },
                 os.path.join(args.output),
             )
-            print(f"✓ Saved best model  {best * 100:.2f}% (Test loss: {best_loss:.4f})")
+            print(f"✓ Saved best model  {best * 100:.2f}% (Val loss: {best_loss:.4f})")
         else:
             no_improve += 1
             print(
-                f"  No improvement (best={best * 100:.2f}% loss={best_loss:.4f}), patience={no_improve}/{PATIENCE})"
+                f"  No improvement (best={best * 100:.2f}% loss={best_loss:.4f}), patience={no_improve}/{args.patience})"
             )
 
-            if no_improve >= PATIENCE:
+            if no_improve >= args.patience:
                 print(f"\n⚑ Early stopping at epoch {epoch + 1}")
                 break
 

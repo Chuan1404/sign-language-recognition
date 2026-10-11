@@ -18,16 +18,16 @@ from tqdm import tqdm
 
 from config import DEVICE, ROOT
 from src.data.WSASL_raw import WLASLLandmarksDataset, WLASLImportantLandmarksDataset
-from src.models import ISLR_Transformer, ISLR_Transformer_GCN_Relative
+from src.models import ISLR_Transformer, ISLR_Transformer_GCN_Relative, ISLR_Transformer_GCN
 from src.training.train import collate_fn
 from src.utils import FusionComponent
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--checkpoint", default=str(Path(ROOT) / "outputs/models/contest_2000_v1.pt"))
+    p.add_argument("--checkpoint", default=str(Path(ROOT) / "outputs/models/contest_100_selector_v1.pt"))
     p.add_argument("--data_path", default=str(Path(ROOT) / "datasets/processed/wlasl_features_v2"))
-    p.add_argument("--label_path", default=str(Path(ROOT) / "datasets/annotations/WLASL2000"))
+    p.add_argument("--label_path", default=str(Path(ROOT) / "datasets/annotations/WLASL100"))
     p.add_argument("--model", choices=["transformer", "gcn", "transformer_gcn"], default="transformer")
     p.add_argument("--split", default="test")
     p.add_argument("--batch_size", type=int, default=8)
@@ -52,7 +52,7 @@ def main(args):
         raise ValueError("Checkpoint class count does not match label_path")
 
     # Same architecture selection as the current main.py.
-    model_cls = ISLR_Transformer if args.model == "transformer" else ISLR_Transformer_GCN_Relative
+    model_cls = ISLR_Transformer_GCN if args.model == "transformer" else ISLR_Transformer_GCN_Relative
     model = model_cls(**kwargs)
     model.load_state_dict(checkpoint["model"], strict=True)
     model.to(DEVICE).eval()

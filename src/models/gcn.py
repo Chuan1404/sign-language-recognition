@@ -163,7 +163,7 @@ class ISLR_Transformer_GCN(nn.Module):
         # return self.gcn_proj(x)  # (B, T, d_model)
         return features
 
-    def encode_transformer(self, features, video_mask):
+    def encode_transformer(self, features, video_mask, x_rgb=None):
         video_mask = video_mask.to(
             device=features.device,
             dtype=torch.bool,
@@ -203,7 +203,7 @@ class ISLR_Transformer_GCN(nn.Module):
 
         return self.encoder_norm(x)
 
-    def forward(self, features, labels=None, video_mask=None):
+    def forward(self, features, labels=None, video_mask=None, x_rgb=None):
 
         if video_mask is None:
             video_mask = torch.ones(
@@ -214,14 +214,15 @@ class ISLR_Transformer_GCN(nn.Module):
         if not video_mask.any(dim=1).all():
             raise ValueError("Each video must have at least one valid frame")
 
-        t = self.encode_transformer(features, video_mask)
+        t = self.encode_transformer(features, video_mask, x_rgb=x_rgb)
         important_score = self.frame_importance_head(t).squeeze(-1)
         important_score = important_score.masked_fill(~video_mask, float("-inf"))
         frame_importance = torch.softmax(important_score, dim=1)
 
         # Weighted pooling lets classification loss train the importance head.
-        pooled = (t * frame_importance.unsqueeze(-1)).sum(dim=1)
-        logits = self.classifier(pooled)
+        # pooled = (t * frame_importance.unsqueeze(-1)).sum(dim=1)
+        t = t.sum(dim=1)
+        logits = self.classifier(t)
 
         loss = None
         if labels is not None:

@@ -1,10 +1,11 @@
 import os
 import sys
 
+from data.WSASL_raw import MultiFeatureSkeletonAugmentor
+from data.augmentation import SkeletonAugmentor
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 import numpy as np
-
-from src.data.WSASL_raw import MultiFeatureSkeletonAugmentor
 
 import argparse
 import json
@@ -58,6 +59,7 @@ def main(args):
     if args.epochs < 1:
         raise ValueError("epochs must be positive")
     fusion_component = FusionComponent()
+
     base_train = WLASLLandmarksDataset(
         args.data_path, args.label_path,
         fusion_component=fusion_component, mode="train"
@@ -143,7 +145,7 @@ def main(args):
         print(f"Val    top-1 acc : {val_top1_acc * 100:.2f}%")
         print(f"Val   top-{args.top_k} acc : {val_topk_acc * 100:.2f}%")
 
-        if val_loss < best_loss:
+        if val_top1_acc > best:
             no_improve = 0
             best = val_top1_acc
             best_loss = val_loss

@@ -295,8 +295,13 @@ def _augment_clip(x):
 class WLASLLandmarksRGBDataset(_LandmarkBase):
 
     def __init__(self, feature_dir, annotation_dir, rgb_dir, fusion_component, mode="train",
-                 max_frames=MAX_FRAMES, augment=None, cache_landmarks=True):
+                 max_frames=MAX_FRAMES, augment=None, cache_landmarks=True, full_frames=False, img_size=112,
+                 keep_full_pose=False):
+
         self.rgb_dir = rgb_dir
+        self.img_size = img_size
+        self.full_frames = full_frames
+        self.keep_full_pose = keep_full_pose
         self.max_frames = max_frames
         self.augment = (mode == "train") if augment is None else augment
         super().__init__(feature_dir, annotation_dir, fusion_component, mode, cache_landmarks)
@@ -319,21 +324,43 @@ class WLASLLandmarksRGBDataset(_LandmarkBase):
 
         if len(indices) != len(rgb):
             raise ValueError(f"{item['video_name']}: indices ({len(indices)}) != rgb ({len(rgb)})")
-        if indices.max() >= len(feats):
+        if self.full_frames and (
+            indices.ndim != 1 or not np.array_equal(indices, np.arange(len(feats)))
+        ):
+            raise ValueError(
+                f"{item['video_name']}: full-frame training requires RGB for all {len(feats)} pose frames "
+                f"in chronological order (indices 0..{len(feats) - 1}); cache has {len(rgb)} RGB frames. "
+                "Regenerate rgb_frames.npy and indices.npy with all frames in the current RGB folder."
+            )
+        if len(indices) == 0 or indices.max() >= len(feats):
             raise ValueError(
                 f"{item['video_name']}: indices vượt độ dài landmark ({indices.max()} >= {len(feats)}). "
                 f"Landmark và cache RGB được tạo từ hai phiên bản dữ liệu khác nhau."
             )
 
-        feats = feats[indices]
-        positions = _sample_positions(len(indices), self.max_frames, self.augment)
+        if not self.full_frames and not self.keep_full_pose:
+            feats = feats[indices]
+        positions = None if self.full_frames else _sample_positions(
+            len(indices), self.max_frames, self.augment and not self.keep_full_pose,
+        )
         if positions is not None:
-            feats = feats[positions]
+            if not self.keep_full_pose:
+                feats = feats[positions]
             rgb_arr = rgb[positions]
         else:
             rgb_arr = np.asarray(rgb)
 
         frames = torch.from_numpy(np.ascontiguousarray(rgb_arr))
+        leading_shape = frames.shape[:-3]
+        # Downsize cached hand images before float conversion and augmentation.
+        if frames.shape[-2:] != (self.img_size, self.img_size):
+            frames = F.interpolate(
+                frames.reshape(-1, *frames.shape[-3:]),
+                size=(self.img_size, self.img_size),
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
+            ).reshape(*leading_shape, 3, self.img_size, self.img_size)
         if frames.dtype == torch.uint8:
             x = frames.float() / 255.0
             if self.augment:
@@ -341,18 +368,6 @@ class WLASLLandmarksRGBDataset(_LandmarkBase):
             x = normalize_imagenet(x)
         else:
             x = frames.float()  # cache cũ đã chuẩn hóa sẵn (float32)
-
-        leading_shape = x.shape[:-3]
-
-        x = F.interpolate(
-            x.reshape(-1, *x.shape[-3:]),
-            size=(112, 112),
-            mode="bilinear",
-            align_corners=False,
-            antialias=True,
-        )
-
-        x = x.reshape(*leading_shape, 3, 112, 112)
 
         return feats, x, item["label"], item["video_name"]
 

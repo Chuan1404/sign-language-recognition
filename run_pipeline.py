@@ -30,9 +30,9 @@ def parse_args(argv=None):
     p.add_argument("--multimodal_pose_lr", type=float, default=1e-6)
     p.add_argument("--pose_weight", type=float, default=0.5)
     p.add_argument("--finetune_pose", action="store_true")
-    p.add_argument("--fixed_k", type=int, default=10, help="Number of important anchors before gap filling; 0 uses score threshold")
-    p.add_argument("--max_frames", type=int, default=100)
+    p.add_argument("--fixed_k", type=int, default=10, help="Top-K selector anchors before smoothing")
     p.add_argument("--max_frame_gap", type=int, default=3)
+    p.add_argument("--max_frames", type=int, default=100)
     p.add_argument("--image_size", type=int, default=224, help="RGB cache resolution; training dataset resizes to 112")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--start_at", choices=STAGES, default="pose", help="Run this stage and all subsequent stages, using earlier artifacts in run_dir")
@@ -46,8 +46,8 @@ def parse_args(argv=None):
                 args.multimodal_lr, args.multimodal_pose_lr)
     if any(value <= 0 for value in positive):
         p.error("Epochs, batch sizes, frame budget, image size and learning rates must be positive")
-    if args.fixed_k < 0 or args.fixed_k > args.max_frames or args.max_frame_gap < 0:
-        p.error("Require 0 <= fixed_k <= max_frames and max_frame_gap >= 0")
+    if args.fixed_k < 1 or args.fixed_k > args.max_frames or args.max_frame_gap < 0:
+        p.error("Require 1 <= fixed_k <= max_frames and max_frame_gap >= 0")
     if not 0 < args.pose_weight < 1:
         p.error("Require 0 < pose_weight < 1")
     if args.run_dir is None:
@@ -75,18 +75,20 @@ def build_plan(args):
         ("extract", command("src/extract_features/extract_important_frame.py", shared + [
             "--checkpoint", pose, "--video_dir", args.video_dir, "--out_dir", cache,
             "--batch_size", args.pose_batch_size, "--fixed_k", args.fixed_k,
-            "--max_frames", args.max_frames, "--max_frame_gap", args.max_frame_gap,
+            "--max_frames", args.max_frames, "--strategy", "selector",
+            "--max_frame_gap", args.max_frame_gap,
             "--image_size", args.image_size, "--crop", "hands", "--seed", args.seed,
             "--splits", *splits]), cache),
         ("rgb", command("main_train.py", shared + validation + [
             "--rgb_dir", cache, "--output", rgb, "--epochs", args.rgb_epochs,
             "--batch_size", args.rgb_batch_size, "--lr", args.rgb_lr]), rgb),
         ("multimodal", command("main_multimodal.py", shared + validation + [
-            "--rgb_dir", cache, "--pose_checkpoint", pose, "--rgb_checkpoint", rgb,
+            "--rgb_dir", cache, "--pose_checkpoint", pose,
             "--output", multimodal, "--epochs", args.multimodal_epochs,
             "--batch_size", args.multimodal_batch_size, "--lr", args.multimodal_lr,
-            "--pose_lr", args.multimodal_pose_lr, "--pose_weight", args.pose_weight,
-            "--seed", args.seed] + (["--finetune_pose"] if args.finetune_pose else [])), multimodal),
+            "--pose_lr", args.multimodal_pose_lr,
+            "--top_k", args.max_frames,
+            "--seed", args.seed]), multimodal),
     ]
     return plan
 

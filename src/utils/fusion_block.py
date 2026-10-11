@@ -13,6 +13,24 @@ class FusionComponent:
     def __init__(self):
         pass
 
+    @staticmethod
+    def mask_below_hips(pose_feature, left_feature, right_feature):
+        """Zero all coordinates below the lowest detected hip, per frame."""
+        T = pose_feature.shape[0]
+
+        pose = np.asarray(pose_feature).reshape(T, 33, _COORD_DIM).copy()
+        left = np.asarray(left_feature).reshape(T, 21, _COORD_DIM).copy()
+        right = np.asarray(right_feature).reshape(T, 21, _COORD_DIM).copy()
+        hips = pose[:, [23, 24]]
+
+        present = np.any(hips != 0, axis=-1) & np.isfinite(hips).all(axis=-1)
+        cutoff = np.where(present, hips[..., 1], -np.inf).max(axis=1)
+        has_hip = present.any(axis=1)
+        for points in (pose, left, right):
+            below = has_hip[:, None] & (points[..., 1] > cutoff[:, None])
+            points[below] = 0
+        return pose, left, right
+
     def fuse(self, pose_feature, left_feature, right_feature):
 
         T = pose_feature.shape[0]
@@ -20,6 +38,8 @@ class FusionComponent:
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
+
+        pose, left, right = self.mask_below_hips(pose, left, right)
 
         all_points = np.concatenate([pose, left, right], axis=1)  # (T, N, 2)
 
@@ -42,13 +62,11 @@ class FusionComponent:
         scale = np.where(scale > _EPS, scale, 1.0)
 
         scale = scale[:, np.newaxis, :]
-        # root = pose[:, np.newaxis, _NOSE_IDX]
-        # root = (pose[:, np.newaxis, _LEFT_SHOULDER_IDX] - pose[:, np.newaxis, _RIGHT_SHOULDER_IDX]) / 2
         root = average_point
 
         pose = (pose - root) / scale
         left = (left - root) / scale
-        right = (right - root) / scale
+        right = (right - root) / scale 
 
         left = left * left_present_mask[..., None]
         right = right * right_present_mask[..., None]
@@ -68,6 +86,8 @@ class FusionComponent:
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
+
+        pose, left, right = self.mask_below_hips(pose, left, right)
 
         pose_present_mask = ~np.all(pose == 0, axis=-1)  # [T, 33]
         left_present_mask = ~np.all(left == 0, axis=-1)  # [T, 21]
@@ -104,6 +124,8 @@ class FusionComponent:
         left = left_feature.reshape(T, 21, _COORD_DIM)
         right = right_feature.reshape(T, 21, _COORD_DIM)
 
+        pose, left, right = self.mask_below_hips(pose, left, right)
+
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
         p = np.concatenate([pose, left, right], axis=1).astype(np.float32)  # (T, N, C)
 
@@ -130,6 +152,8 @@ class FusionComponent:
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
+
+        pose, left, right = self.mask_below_hips(pose, left, right)
 
         left_present_mask = ~np.all(left == 0, axis=-1)
         right_present_mask = ~np.all(right == 0, axis=-1)
@@ -166,6 +190,8 @@ class FusionComponent:
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
+        pose, left, right = self.mask_below_hips(pose_feature, left, right)
+
         left_wrist = left[:, 0:1, :].copy()
         right_wrist = right[:, 0:1, :].copy()
 
@@ -174,7 +200,6 @@ class FusionComponent:
         scale = scale[:, np.newaxis, :]
 
         if use_pose:
-            pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
             pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
 
             left = np.concatenate([pose[:, ::2, :], left], axis=1)
@@ -289,6 +314,8 @@ class FusionComponent:
             np.float32, copy=True
         )
 
+        pose, left, right = self.mask_below_hips(pose_feature, left, right)
+
         left_present_mask = ~np.all(left == 0, axis=-1)
         right_present_mask = ~np.all(right == 0, axis=-1)
 
@@ -297,7 +324,7 @@ class FusionComponent:
                 & right_present_mask.any(axis=1)
         ).astype(np.float32)[:, None]
 
-        scale = self._shoulder_scale(pose_feature)  # (T, 1, 1)
+        scale = self._shoulder_scale(pose)  # (T, 1, 1)
 
         left_normalized = self.normalize_by_wrist(left) / scale
         right_normalized = self.normalize_by_wrist(right) / scale

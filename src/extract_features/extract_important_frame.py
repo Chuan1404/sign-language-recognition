@@ -10,6 +10,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import argparse
 import json
 import shutil
+from pathlib import Path
 from collections import Counter
 
 import cv2
@@ -24,6 +25,8 @@ from pipeline_config import LABEL_DIR, MODEL_DIR
 
 
 def select_indices(strategy, scores, T, min_frames, max_frames, fixed_k, rng):
+    if T < 1:
+        return np.empty(0, dtype=np.int64)
     if fixed_k:
         k = min(int(fixed_k), T)
     elif strategy == "selector":
@@ -213,11 +216,7 @@ def process_video(video_id, meta, args, rng, stats):
     scores = np.asarray(meta["importance"], dtype=np.float64)
     T = len(scores)
     indices = select_indices(args.strategy, scores, T, args.min_frames, args.max_frames, args.fixed_k, rng)
-
-    indices = smooth_indices(
-        indices, max_gap=getattr(args, "max_frame_gap", 3),
-        max_frames=args.max_frames,
-    )
+    indices = smooth_indices(indices, max_gap=args.max_frame_gap, max_frames=args.max_frames)
 
     frames = read_all_frames(video_path)
     if not frames:
@@ -281,8 +280,15 @@ def process_video(video_id, meta, args, rng, stats):
     np.save(rgb_path, chw)
     np.save(idx_path, indices.astype(np.int64))
 
+    # Remove only generated previews so reruns cannot leave old selected frames.
+    prev = os.path.join(out_dir, "preview")
+    if os.path.isdir(prev):
+        preview_root = Path(prev).resolve()
+        for pattern in ("*_left.jpg", "*_right.jpg", "frame_*.jpg"):
+            for old_preview in preview_root.glob(pattern):
+                if old_preview.is_file() and old_preview.resolve().parent == preview_root:
+                    old_preview.unlink()
     if args.save_jpg:
-        prev = os.path.join(out_dir, "preview")
         os.makedirs(prev, exist_ok=True)
         for m, arr in zip(indices, chw):
             if two_hands:
@@ -296,6 +302,7 @@ def process_video(video_id, meta, args, rng, stats):
     stats["done"] += 1
     stats["frames_total"] += T
     stats["frames_selected"] += len(indices)
+    print(f"{video_id}: {len(indices)}/{T} frames, {len(indices) * (2 if two_hands else 1)} hand images")
 
 
 def load_score_model(checkpoint_path, label_path):
@@ -360,6 +367,10 @@ def score_requested_splits(args):
 
 
 def main(args):
+    if args.fixed_k < 1:
+        raise ValueError("top_k must be positive; use an explicit frame budget")
+    if args.max_frames < args.fixed_k or args.max_frame_gap < 0:
+        raise ValueError("Require max_frames >= top_k and max_frame_gap >= 0")
     set_seed(args.seed)
     rng = np.random.RandomState(args.seed)
 
@@ -369,7 +380,22 @@ def main(args):
     # }
     # meta_path = os.path.join(args.out_dir, "_meta.json")
 
-    if args.reuse_scores:
+    if args.strategy != "selector":
+        # Uniform/random sampling only needs sequence lengths, no selector inference.
+        from src.data.WSASL_raw import WLASLLandmarksDataset
+        importance = {}
+        for split in args.splits:
+            with open(os.path.join(args.label_path, f"{split}.json"), encoding="utf-8") as f:
+                if not json.load(f):
+                    continue
+            dataset = WLASLLandmarksDataset(
+                args.data_path, args.label_path, mode=split, cache_landmarks=False,
+            )
+            for item in dataset.samples:
+                length = len(np.load(item["left_hand_path"], mmap_mode="r"))
+                if length:
+                    importance[item["video_name"]] = {"importance": np.zeros(length)}
+    elif args.reuse_scores:
         importance = {}
         for split in args.splits:
             path = importance_path(split)
@@ -400,22 +426,23 @@ def main(args):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Checkpoint -> frame scores -> gap filling -> RGB cache")
-    p.add_argument("--checkpoint", default=os.path.join(MODEL_DIR, "contest_100_selector_v1.pt"))
+    p = argparse.ArgumentParser(description="Top-K anchors -> gap smoothing -> RGB cache")
+    p.add_argument("--checkpoint", default=os.path.join(MODEL_DIR, "contest_100_v1.pt"))
     p.add_argument("--label_path", default=LABEL_DIR)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--reuse_scores", action="store_true",
                    help="Skip checkpoint inference and use existing importance JSON files")
     p.add_argument("--strategy", choices=["selector", "uniform", "random"], default="selector")
-    p.add_argument("--fixed_k", type=int, default=10, help="Fixed frame count for all videos")
+    p.add_argument("--top_k", "--fixed_k", dest="fixed_k", type=int, default=10,
+                   help="Anchor count before smoothing (default: 10; final count may be larger)")
     p.add_argument("--min_frames", type=int, default=MIN_FRAMES)
     p.add_argument("--max_frames", type=int, default=MAX_FRAMES)
     p.add_argument("--max_frame_gap", type=int, default=3,
-                   help="Insert intermediate frames until gaps <= this value or max_frames reached; 0 disables")
+                   help="Fill gaps with real frames up to max_frames; 0 disables smoothing")
     p.add_argument("--crop", choices=["none", "signer", "hands", "hand"], default="hands",
                    help="Crop mode: none, signer, or hands/hand")
-    p.add_argument("--image_size", type=int, default=IMAGE_SIZE,
-                   help="Output square image size (default from pipeline_config.IMAGE_SIZE)")
+    p.add_argument("--image_size", type=int, default=256,
+                   help="Cached square hand image size (default: 256; multimodal training resizes to 64)")
     p.add_argument("--margin", type=float, default=0.20, help="Margin around crop region (default 0.20)")
     p.add_argument("--splits", nargs="+", default=["train", "val", "test"])
     p.add_argument("--data_path", default=DATA_PATH)

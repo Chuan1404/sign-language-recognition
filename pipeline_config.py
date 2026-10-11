@@ -11,11 +11,11 @@ LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 RAW_VIDEO_DIR = os.path.join(ROOT, "datasets", "raw", "WLASL", "videos")
 MODEL_DIR = os.path.join(ROOT, "outputs", "models")
 
-SELECTED_RGB_DIR = os.path.join(ROOT, "outputs", "selected_rgb")
+SELECTED_RGB_DIR = os.path.join(ROOT, "outputs", "selected_rgb_masked")
 IMPORTANCE_DIR = os.path.join(ROOT, "outputs", "frame_importance")
 
 IMAGE_SIZE = 224
-MAX_FRAMES = 100
+MAX_FRAMES = 100 
 MIN_FRAMES = 8
 
 

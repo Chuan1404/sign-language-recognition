@@ -58,19 +58,16 @@ class _LandmarkBase(Dataset):
                 self.skipped["unknown_gloss"] += 1
                 continue
 
-            extra, reason = self._extra_sample_info(video_name)
-            if extra is None:
-                self.skipped[reason] += 1
-                continue
+            # extra, reason = self._extra_sample_info(video_name)
+            # if extra is None:
+            #     self.skipped[reason] += 1
+            #     continue
 
             self.samples.append(
-                {"video_name": video_name, "label": self.gloss2idx[gloss], **paths, **extra}
+                {"video_name": video_name, "label": self.gloss2idx[gloss], **paths}
             )
 
         self._report()
-
-    def _extra_sample_info(self, video_name):
-        return {}, None
 
     def _resolve_gloss(self, video_name, gloss_ann, feat_dir):
         text_path = os.path.join(feat_dir, "gloss.txt")
@@ -161,97 +158,29 @@ class WLASLLandmarksDataset(_LandmarkBase):
 
         super().__init__(feature_dir, annotation_dir, fusion_component, mode, cache_landmarks)
 
-    def _extra_sample_info(self, video_name):
-        if self.only_important_frames and self.indices_dir:
-            idx_path = os.path.join(self.indices_dir, str(video_name), INDICES_FILENAME)
-            if os.path.exists(idx_path):
-                return {"indices_path": idx_path}, None
-            if self.importance_data and str(video_name) in self.importance_data:
-                return {"video_id_str": str(video_name)}, None
-            return None, "missing_indices"
-        return {}, None
-
     def __getitem__(self, idx):
         item = self.samples[idx]
         feature = self._load_features(item)
 
-        if self.only_important_frames:
-            if "indices_path" in item:
-                indices = np.load(item["indices_path"])
-                if len(indices) > 0 and indices.max() < len(feature):
-                    feature = feature[indices]
-                elif len(indices) > 0:
-                    valid_idx = indices[indices < len(feature)]
-                    if len(valid_idx) > 0:
-                        feature = feature[valid_idx]
-            elif self.importance_data and str(item["video_name"]) in self.importance_data:
-                scores = np.asarray(self.importance_data[str(item["video_name"])]["importance"])
-                T = len(feature)
-                k = int(np.sum(scores > (1.5 / max(T, 1))))
-                k = int(np.clip(k, min(8, T), min(100, T)))
-                top_indices = np.sort(np.argsort(-scores)[:k])
-                feature = feature[top_indices]
+        # if self.only_important_frames:
+        #     if "indices_path" in item:
+        #         indices = np.load(item["indices_path"])
+        #         if len(indices) > 0 and indices.max() < len(feature):
+        #             feature = feature[indices]
+        #         elif len(indices) > 0:
+        #             valid_idx = indices[indices < len(feature)]
+        #             if len(valid_idx) > 0:
+        #                 feature = feature[valid_idx]
+        #     elif self.importance_data and str(item["video_name"]) in self.importance_data:
+        #         scores = np.asarray(self.importance_data[str(item["video_name"])]["importance"])
+        #         T = len(feature)
+        #         k = int(np.sum(scores > (1.5 / max(T, 1))))
+        #         k = int(np.clip(k, min(8, T), min(100, T)))
+        #         top_indices = np.sort(np.argsort(-scores)[:k])
+        #         feature = feature[top_indices]
 
         return feature, item["label"], item["video_name"]
 
-class WLASLRelatively(_LandmarkBase):
-    def __init__(
-        self,
-        feature_dir,
-        annotation_dir,
-        fusion_component=None,
-        mode="train",
-        cache_landmarks=True,
-        indices_dir=None,
-        importance_json=None,
-        only_important_frames=False,
-    ):
-        self.indices_dir = indices_dir
-        self.importance_json = importance_json
-        self.only_important_frames = only_important_frames or (indices_dir is not None)
-        self.importance_data = None
-        if self.importance_json and os.path.exists(self.importance_json):
-            with open(self.importance_json, "r") as f:
-                self.importance_data = json.load(f)
-
-        if fusion_component is None:
-            fusion_component = FusionComponent()
-
-
-        super().__init__(feature_dir, annotation_dir, fusion_component, mode, cache_landmarks)
-
-class WLASLImportantLandmarksDataset(WLASLLandmarksDataset):
-    """
-    Dataset WLASL Landmarks trích xuất CHỈ TRÊN CÁC FRAME IMPORTANT.
-    Phục vụ trực tiếp cho mô hình GCN (như ISLR_GCN, ISLR_Transformer_GCN)
-    để chỉ học trên các frame chuyển động cử chỉ quan trọng.
-    """
-    def __init__(
-        self,
-        feature_dir,
-        annotation_dir,
-        indices_dir=None,
-        fusion_component=None,
-        mode="train",
-        cache_landmarks=True,
-        importance_json=None,
-    ):
-        if indices_dir is None:
-            try:
-                from pipeline_config import SELECTED_RGB_DIR
-                indices_dir = SELECTED_RGB_DIR
-            except Exception:
-                indices_dir = os.path.join("outputs", "selected_rgb")
-        super().__init__(
-            feature_dir=feature_dir,
-            annotation_dir=annotation_dir,
-            fusion_component=fusion_component,
-            mode=mode,
-            cache_landmarks=cache_landmarks,
-            indices_dir=indices_dir,
-            importance_json=importance_json,
-            only_important_frames=True,
-        )
 
 def _sample_positions(n, max_frames, train):
     if n <= max_frames:

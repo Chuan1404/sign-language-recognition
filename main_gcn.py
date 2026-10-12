@@ -5,8 +5,13 @@ import json
 import torch
 from torch.utils.data import DataLoader
 
+import numpy as np
+
 from config import ROOT, DEVICE
-from src.data.WSASL_raw import WLASLLandmarksDataset, WLASLImportantLandmarksDataset
+from data.WSASL_raw import MultiFeatureSkeletonAugmentor
+from data.augmentation import AugmentedSkeletonDataset
+from models import ISLR_GCN_Transformer_V2
+from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.models.gcn import ISLR_Remove_Node_By_GCN
 from src.utils import FusionComponent
 from src.training.train import train_one_epoch, collate_fn, validate
@@ -15,7 +20,7 @@ DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = "contest_100_v1.pt"
+MODEL_NAME = "contest_100_v2.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
@@ -45,8 +50,9 @@ def main(args):
     base_train = WLASLLandmarksDataset(args.data_path, args.label_path, fusion_component=fusion_component, mode="train")
     base_val = WLASLLandmarksDataset(args.data_path, args.label_path, fusion_component=fusion_component, mode="test")
 
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
-    train_dataset = base_train
+    train_dataset = AugmentedSkeletonDataset(base_train,
+        MultiFeatureSkeletonAugmentor(rng=np.random.default_rng(42)), )
+    # train_dataset = base_train
     val_dataset = base_val
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn,
@@ -60,7 +66,7 @@ def main(args):
     num_classes = len(gloss2idx)
     model_kwargs = {"num_classes": num_classes, }
 
-    model = ISLR_Remove_Node_By_GCN(**model_kwargs).to(DEVICE)
+    model = ISLR_GCN_Transformer_V2(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")
@@ -92,8 +98,8 @@ def main(args):
             best_loss = val_loss
             torch.save(
                 {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
-                    "epoch": epoch, "test_loss": val_loss, "test_top1_acc": val_top1_acc, "test_topk_acc": val_topk_acc,
-                    "model_kwargs": model_kwargs, }, os.path.join(args.output), )
+                 "epoch": epoch, "test_loss": val_loss, "test_top1_acc": val_top1_acc, "test_topk_acc": val_topk_acc,
+                 "model_kwargs": model_kwargs, }, os.path.join(args.output), )
             print(f"✓ Saved best model  {best * 100:.2f}% (Test loss: {best_loss:.4f})")
         else:
             no_improve += 1

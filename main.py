@@ -22,16 +22,16 @@ from src.training.train import collate_fn, train_one_epoch, validate
 from src.utils import FusionComponent
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
-LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
+LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = "contest_100_v1.pt"
+MODEL_NAME = "contest_2000_v1.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
 EPOCHS = 100
 TOP_K = 2
-PATIENCE = 10
+PATIENCE = 20
 
 print(DEVICE)
 

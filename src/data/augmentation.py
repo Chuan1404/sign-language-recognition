@@ -314,7 +314,7 @@ class RelativeHandSkeletonAugmentor:
         return fused[keep].copy()
 
 class AugmentedSkeletonDataset:
-    def __init__(self, base_dataset, augmentor=None, num_augmentations=3, seed=None):
+    def __init__(self, base_dataset, augmentor=None, num_augmentations=1, seed=None):
         self.base_dataset = base_dataset
         self.num_augmentations = num_augmentations
         self.base_len = len(base_dataset)

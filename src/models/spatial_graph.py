@@ -160,9 +160,6 @@ class GCNBlock(nn.Module):
 
     def forward(self, features, mask=None):
         m = None if mask is None else mask[:, :, None, None].to(features.dtype)
-        # print("========= MATRIX ============")
-        # torch.set_printoptions(threshold=float('inf'))
-        # print(self.A_learnable[:, :7, :7])
         res = self.residual(features)
         A_norm = self._normalized_A()
 
@@ -178,13 +175,13 @@ class GCNBlock(nn.Module):
         if m is not None:
             x = x * m
 
-        x = self.tcn(x)
+        # x = self.tcn(x)
         x = self.drop(x)
 
-        x = x + res
+        # x = x + res
 
-        if m is not None:
-            x = x * m
+        # if m is not None:
+            # x = x * m
         return x
 
 
@@ -228,7 +225,7 @@ class DecoupledGCN(nn.Module):
 
 class SelfPacingDroppingBlock(nn.Module):
     def __init__(self, in_ch, out_ch, num_nodes, base_adjacency,
-                 decouple_p=4, drop=True, use_tcn=False,
+                 decouple_p=4, drop=True, use_tcn=True,
                  temporal_kernel_size=9, dropout=0.1):
         super().__init__()
         if temporal_kernel_size <= 0 or temporal_kernel_size % 2 == 0:

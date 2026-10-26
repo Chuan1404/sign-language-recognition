@@ -1,11 +1,8 @@
 import os
 import sys
 
-from data.WSASL_raw import MultiFeatureSkeletonAugmentor
-from data.augmentation import SkeletonAugmentor
-
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
-import numpy as np
+from functools import partial
 
 import argparse
 import json
@@ -13,19 +10,16 @@ import json
 import torch
 from torch.utils.data import DataLoader
 
-from config import DEVICE, ROOT
-from pipeline_config import set_seed
+from config import DEVICE, ROOT, _COORD_DIM, set_seed
 from src.models import ISLR_GCN, ISLR_Transformer, ISLR_Transformer_GCN
-from src.data.augmentation import AugmentedSkeletonDataset
-from src.data.WSASL_raw import WLASLLandmarksDataset
+from src.data.WSASL_raw import WLASLLandmarksDataset, NUM_JOINTS
 from src.training.train import collate_fn, train_one_epoch, validate
-from src.utils import FusionComponent
 
 DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_v2")
-LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL2000")
+LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = "contest_2000_v1.pt"
+MODEL_NAME = "landmarks_100_v1.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
@@ -54,31 +48,37 @@ def default_args():
     return parser
 
 
+def collate_landmarks(batch, use_all_features=True):
+    features, labels, video_mask, video_ids = collate_fn(batch)
+    if not use_all_features:
+        # Plain GCN/Transformer take one coordinate block: average features.
+        feature_dim = NUM_JOINTS * _COORD_DIM
+        features = features[..., feature_dim:2 * feature_dim]
+    return features, labels, video_mask, video_ids
+
+
 def main(args):
     set_seed(args.seed)
     if args.epochs < 1:
         raise ValueError("epochs must be positive")
-    fusion_component = FusionComponent()
-
+    print(f"Landmark features: {os.path.abspath(args.data_path)}")
     base_train = WLASLLandmarksDataset(
         args.data_path, args.label_path,
-        fusion_component=fusion_component, mode="train"
+        mode="train"
     )
     base_val = WLASLLandmarksDataset(
         args.data_path, args.label_path,
-        fusion_component=fusion_component, mode=args.val_mode
+        mode=args.val_mode
     )
-    train_dataset = AugmentedSkeletonDataset(
-        base_train,
-        MultiFeatureSkeletonAugmentor(rng=np.random.default_rng(args.seed)),
-    )
+    train_dataset = base_train
     val_dataset = base_val
+    batch_collate = partial(collate_landmarks, use_all_features=args.model == "transformer_gcn")
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=collate_fn,
+        collate_fn=batch_collate,
         num_workers=0,
         pin_memory=True,
     )
@@ -86,7 +86,7 @@ def main(args):
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=collate_fn,
+        collate_fn=batch_collate,
         num_workers=0,
         pin_memory=True,
     )
@@ -97,18 +97,18 @@ def main(args):
     num_classes = len(gloss2idx)
     model_kwargs = {
         "num_classes": num_classes,
+        "num_nodes": NUM_JOINTS,
     }
-
     if args.model == "gcn":
         print("Using model: ISLR_GCN")
-        model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
+        model = ISLR_GCN(**model_kwargs).to(DEVICE)
     elif args.model == "transformer_gcn":
         print("Using model: ISLR_Transformer_GCN")
+        model_kwargs.update(single_feature=False, max_seq_len=5000)
         model = ISLR_Transformer_GCN(**model_kwargs).to(DEVICE)
     else:
+        model_kwargs.update(max_seq_len=5000)
         model = ISLR_Transformer(**model_kwargs).to(DEVICE)
-        # model = ISLR_Transformer_Relative(**model_kwargs).to(DEVICE)
-        # model = ISLR_Transformer_Selector(**model_kwargs).to(DEVICE)
 
 
     total_params = sum(p.numel() for p in model.parameters())

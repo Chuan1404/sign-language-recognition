@@ -9,10 +9,10 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from config import _COORD_DIM, _NUM_NODE
-from pipeline_config import IMAGE_SIZE, MAX_FRAMES
+from config import _COORD_DIM, _NUM_NODE, IMAGE_SIZE, MAX_FRAMES
 from src.utils.rgb import normalize_imagenet
 from src.utils import FusionComponent
+from src.data.video_filter import excluded_video_ids
 
 NUM_JOINTS = _NUM_NODE
 
@@ -41,8 +41,12 @@ class _LandmarkBase(Dataset):
         entries = _read_split(annotation_dir, mode)
         self.samples = []
         self.skipped = Counter()
+        excluded = excluded_video_ids()
 
         for video_name in sorted(entries):
+            if video_name in excluded:
+                self.skipped["excluded_video_id"] += 1
+                continue
             feat_dir = os.path.join(feature_dir, video_name)
             if not os.path.isdir(feat_dir):
                 self.skipped["no_feature_dir"] += 1

@@ -52,11 +52,13 @@ class SpatialGCNBlock(nn.Module):
 
 
 class ISLR_GCN(nn.Module):
-    def __init__(self, channels=(32, 64, 128, 256), num_classes=2000):
+    def __init__(self, channels=(32, 64, 128, 256), num_classes=2000,
+                 num_nodes=_NUM_NODE, edges=None):
         super().__init__()
 
-        self.num_nodes = _NUM_NODE
-        self.A_in, self.A_out = build_direction_adjacency_from_edges(HAND_EDGES, num_nodes=self.num_nodes, )
+        self.num_nodes = num_nodes
+        self.A_in, self.A_out = build_direction_adjacency_from_edges(
+            HAND_EDGES if edges is None else edges, num_nodes=self.num_nodes)
         self.register_buffer("adjacency_matrix", self.A_in)
 
         channels = [_COORD_DIM, *channels]
@@ -116,11 +118,14 @@ class ISLR_GCN(nn.Module):
 
 class ISLR_Transformer_GCN(nn.Module):
     def __init__(self, gcn_channels=(64, 128, 128, 256), d_model=256, num_encoder_layers=3, nhead=8,
-                 dim_feedforward=512 * 4, dropout=0.1, max_seq_len=300, num_classes=1000, ):
+                 dim_feedforward=512 * 4, dropout=0.1, max_seq_len=300, num_classes=1000,
+                 num_nodes=_NUM_NODE, edges=None, single_feature=False):
         super().__init__()
-        self.num_nodes = _NUM_NODE
+        self.num_nodes = num_nodes
+        self.single_feature = single_feature
 
-        self.A_in = build_adjacency_from_edges(HAND_EDGES, num_nodes=self.num_nodes, )
+        self.A_in = build_adjacency_from_edges(
+            HAND_EDGES if edges is None else edges, num_nodes=self.num_nodes)
         self.register_buffer("adjacency_matrix", self.A_in)
         channels = [_COORD_DIM, *gcn_channels]
 
@@ -164,17 +169,21 @@ class ISLR_Transformer_GCN(nn.Module):
 
         B, T, D = features.shape
 
-        shape_feature, average_feature, position_feature = torch.split(features, self.feature_dim, dim=-1, )
-
-        x_shape = self.shape_projection(shape_feature)
-        x_average = self.average_projection(average_feature)
-        x_position = self.position_projection(position_feature)
+        if self.single_feature:
+            if D != self.feature_dim:
+                raise ValueError(f"Expected {self.feature_dim} features, got {D}")
+            x = self.shape_projection(features)
+        else:
+            shape_feature, average_feature, position_feature = torch.split(features, self.feature_dim, dim=-1)
+            x_shape = self.shape_projection(shape_feature)
+            x_average = self.average_projection(average_feature)
+            x_position = self.position_projection(position_feature)
+            x = x_shape + x_average + x_position
 
         # Giữ nhánh GCN hiện tại, đầu vào là shape feature.
         # x_gcn = self.encode_gcn(average_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
 
         # x = x_shape + x_average + x_position + x_gcn
-        x = x_shape + x_average + x_position
         # x = x_average                                     # best=73.00% loss=1.2133 75.00%
         # x = x_average + x_gcn                             # best=66.00% loss=1.4254 95.00%
 
@@ -201,20 +210,15 @@ class ISLR_Transformer_GCN(nn.Module):
         video_mask = video_mask.to(device=features.device, dtype=torch.bool)
         B, T, D = features.shape
 
-        shape_feature, average_feature, position_feature = torch.split(features, self.feature_dim, dim=-1, )
+        if self.single_feature:
+            average_feature = features
+        else:
+            shape_feature, average_feature, position_feature = torch.split(features, self.feature_dim, dim=-1)
 
         t = self.encode_transformer(features, video_mask, x_rgb=x_rgb)
-        x_gcn = self.encode_gcn(average_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
+        # x_gcn = self.encode_gcn(average_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
+        # t = t + x_gcn
 
-        t = t + x_gcn
-
-        # important_score = self.frame_importance_head(t).squeeze(-1)
-        # important_score = important_score.masked_fill(~video_mask, float("-inf"))
-        # frame_importance = torch.softmax(important_score, dim=1)
-
-        # Weighted pooling lets classification loss train the importance head.
-        # pooled = (t * frame_importance.unsqueeze(-1)).sum(dim=1)
-        # t = t.sum(dim=1)
         t = masked_mean_pool(t, video_mask)
         logits = self.classifier(t)
 

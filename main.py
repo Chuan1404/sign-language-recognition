@@ -1,6 +1,8 @@
 import os
 import sys
 
+from data.augmentation import AugmentedSkeletonDataset, SkeletonAugmentor
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 from functools import partial
 
@@ -70,7 +72,7 @@ def main(args):
         args.data_path, args.label_path,
         mode=args.val_mode
     )
-    train_dataset = base_train
+    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor())
     val_dataset = base_val
     batch_collate = partial(collate_landmarks, use_all_features=args.model == "transformer_gcn")
 

@@ -48,7 +48,6 @@ _POSE_LR_PAIRS_RAW = [
 class SkeletonAugmentor:
     def __init__(
         self,
-        mirror_prob=0.3,
         rotation_deg=15.0,
         scale_range=(0.8, 1.2),
         noise_std=0.01,
@@ -61,7 +60,6 @@ class SkeletonAugmentor:
         enable_noise=True,
         rng=None,
     ):
-        self.mirror_prob = mirror_prob
         self.rotation_deg = rotation_deg
         self.scale_range = scale_range
         self.noise_std = noise_std
@@ -85,13 +83,8 @@ class SkeletonAugmentor:
 
         present_mask = ~np.all(blocks[:, 0] == 0, axis=-1)  # (T, N)
 
-        # if self.speed_perturb_prob > 0 and self.rng.random() < self.speed_perturb_prob:
-        #     blocks, present_mask = self._speed_perturb(blocks, present_mask)
-        #     T = blocks.shape[0]
-
-        # ── Rotate & Scale (áp dụng đồng nhất cho tất cả blocks) ──
         blocks = self._rotate(blocks)
-        blocks = self._scale(blocks)
+        # blocks = self._scale(blocks)
 
         # ── Gaussian noise ──
         if (
@@ -102,19 +95,9 @@ class SkeletonAugmentor:
             blocks = self._add_noise(blocks, present_mask)
 
         blocks = blocks * present_mask[:, None, :, None]  # broadcast: (T,1,N,1)
-
         coords = blocks.reshape(T, flat_dim)
 
-        # if self.frame_dropout_prob > 0 and self.rng.random() < self.frame_dropout_prob:
-        #     coords = self._drop_frames(coords)
-
         return coords.astype(np.float32)
-
-    # def _mirror(self, blocks):
-    #     # blocks: (T, num_blocks, N, C) — hoán đổi node trái ↔ phải, lật trục x
-    #     blocks = blocks[:, :, _SWAP_IDX, :].copy()
-    #     blocks[..., 0] *= -1.0  # flip x axis (left ↔ right)
-    #     return blocks
 
     def _rotate(self, coords):
         deg = self.rng.uniform(-self.rotation_deg, self.rotation_deg)
@@ -129,39 +112,39 @@ class SkeletonAugmentor:
             raise ValueError(f"Unsupported _COORD_DIM: {_COORD_DIM}")
         return coords @ R.T
 
-    def _speed_perturb(self, blocks, present_mask):
-        T = blocks.shape[0]
-        if T <= 2:
-            return blocks, present_mask
+    # def _speed_perturb(self, blocks, present_mask):
+    #     T = blocks.shape[0]
+    #     if T <= 2:
+    #         return blocks, present_mask
+    #
+    #     factor = self.rng.uniform(*self.speed_range)
+    #     new_T = max(2, round(T / factor))
+    #     if new_T == T:
+    #         return blocks, present_mask
+    #
+    #     new_idx = np.linspace(0, T - 1, new_T)
+    #
+    #     idx_floor = np.floor(new_idx).astype(np.int64)
+    #     idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
+    #
+    #     extra_dims = blocks.ndim - 1
+    #     frac = (new_idx - idx_floor).astype(np.float32).reshape(-1, *([1] * extra_dims))
+    #
+    #     blocks_new = (
+    #         blocks[idx_floor] * (1.0 - frac) + blocks[idx_ceil] * frac
+    #     ).astype(np.float32)
+    #
+    #     nearest_idx = np.round(new_idx).astype(np.int64)
+    #     mask_new = present_mask[nearest_idx]
+    #
+    #     return blocks_new, mask_new
 
-        factor = self.rng.uniform(*self.speed_range)
-        new_T = max(2, round(T / factor))
-        if new_T == T:
-            return blocks, present_mask
-
-        new_idx = np.linspace(0, T - 1, new_T)
-
-        idx_floor = np.floor(new_idx).astype(np.int64)
-        idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
-
-        extra_dims = blocks.ndim - 1
-        frac = (new_idx - idx_floor).astype(np.float32).reshape(-1, *([1] * extra_dims))
-
-        blocks_new = (
-            blocks[idx_floor] * (1.0 - frac) + blocks[idx_ceil] * frac
-        ).astype(np.float32)
-
-        nearest_idx = np.round(new_idx).astype(np.int64)
-        mask_new = present_mask[nearest_idx]
-
-        return blocks_new, mask_new
-
-    def _scale(self, coords):
-        lo, hi = self.scale_range
-        factor = self.rng.uniform(lo, hi)
-        return coords * factor
-
-    def _add_noise(self, blocks, present_mask):
+    # def _scale(self, coords):
+    #     lo, hi = self.scale_range
+    #     factor = self.rng.uniform(lo, hi)
+    #     return coords * factor
+    #
+    def  _add_noise(self, blocks, present_mask):
         noise = self.rng.normal(0.0, self.noise_std, size=blocks.shape).astype(
             np.float32
         )
@@ -169,18 +152,18 @@ class SkeletonAugmentor:
             :, None, :, None
         ]  # (T, 1, N, 1) → broadcast với (T, B, N, C)
         return blocks + noise * mask
-
-    def _drop_frames(self, coords_flat):
-        T = coords_flat.shape[0]
-        if T <= 2:
-            return coords_flat
-        max_drop = max(1, int(T * self.max_frame_dropout_ratio))
-        n_drop = int(self.rng.integers(1, max_drop + 1))
-        n_drop = min(n_drop, T - 2)  # keep at least 2 frames
-        drop_idx = self.rng.choice(T, size=n_drop, replace=False)
-        keep_mask = np.ones(T, dtype=bool)
-        keep_mask[drop_idx] = False
-        return coords_flat[keep_mask]
+    #
+    # def _drop_frames(self, coords_flat):
+    #     T = coords_flat.shape[0]
+    #     if T <= 2:
+    #         return coords_flat
+    #     max_drop = max(1, int(T * self.max_frame_dropout_ratio))
+    #     n_drop = int(self.rng.integers(1, max_drop + 1))
+    #     n_drop = min(n_drop, T - 2)  # keep at least 2 frames
+    #     drop_idx = self.rng.choice(T, size=n_drop, replace=False)
+    #     keep_mask = np.ones(T, dtype=bool)
+    #     keep_mask[drop_idx] = False
+    #     return coords_flat[keep_mask]
 
 class AugmentedSkeletonDataset:
     def __init__(self, base_dataset, augmentor=None, num_augmentations=1, seed=None):

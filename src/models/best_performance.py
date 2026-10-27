@@ -1,16 +1,17 @@
 import torch
 import torch.nn as nn
 from config import _NUM_NODE, _COORD_DIM
-from models import build_direction_adjacency_from_edges, HAND_EDGES, GCNBlock, PositionalEncoding, ModelOutput
+from models import build_direction_adjacency_from_edges, HAND_EDGES, GCNBlock, PositionalEncoding, ModelOutput, \
+    FULL_BODY_EDGES
 import torch.nn.functional as F
 
-class ISLR_Transformer_GCN(nn.Module):
-    def __init__(self, gcn_channels=(64, 64, 128, 128), d_model=128, num_encoder_layers=3, nhead=8,
-                 dim_feedforward=128 * 8, dropout=0.1, max_seq_len=5000, num_classes=1000, ):
+class ISLR_Transformer_GCN_BEST(nn.Module):
+    def __init__(self, gcn_channels=(128, 128, 256, 256), d_model=256, num_encoder_layers=3, nhead=8,
+                 dim_feedforward=256 * 8, dropout=0.1, max_seq_len=5000, num_classes=1000, ):
         super().__init__()
         self.num_nodes = _NUM_NODE
 
-        self.A_in, self.A_out = build_direction_adjacency_from_edges(HAND_EDGES, num_nodes=self.num_nodes, )
+        self.A_in, self.A_out = build_direction_adjacency_from_edges(FULL_BODY_EDGES, num_nodes=self.num_nodes, )
         self.register_buffer("adjacency_matrix", self.A_in)
         channels = [_COORD_DIM, *gcn_channels]
 

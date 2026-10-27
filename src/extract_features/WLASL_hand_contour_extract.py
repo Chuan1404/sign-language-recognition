@@ -1,18 +1,3 @@
-"""Extract 64 color-grown mesh + 21 original MediaPipe points per hand.
-
-Run from the repository root:
-    python src/extract_features/WLASL_hand_contour_extract.py
-    python src/extract_features/WLASL_hand_contour_extract.py --limit 1
-    python src/extract_features/WLASL_hand_contour_extract.py --video path/to/video.mp4
-
-Outputs: left_hand.npy/right_hand.npy (T, 170), ordered [64 mesh, 21 MP],
-keypoint_valid.npy (T, 2, 85), valid.npy/landmark_valid.npy (T, 2),
-landmark_xyz.npy (T, 2, 21, 3), metadata.json. Hand coordinates are normalized
-x/y; missing points are zero with independent mesh/landmark validity.
-Contours are 2D silhouettes, not 3D meshes or anatomical correspondences.
-Contour indices are cyclically aligned across successive valid frames, as in
-hand_mesh_color_region_growing.ipynb. MediaPipe wrist is always hand index 64.
-"""
 import argparse
 import json
 import os

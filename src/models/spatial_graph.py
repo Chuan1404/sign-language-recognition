@@ -10,8 +10,7 @@ from torch import nn
 from config import _N_HAND, _REMOVE_POSE_IDX, _NUM_NODE, _COORD_DIM
 
 _HAND_BONES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (0, 9), (9, 10), (10, 11), (11, 12),
-               (0, 13), (13, 14), (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20), (5, 9), (9, 13),
-               (13, 17), ]
+               (0, 13), (13, 14), (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20)]
 
 _POSE_BONES = [  # face
     (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8), (9, 10),  # torso / arms
@@ -198,10 +197,10 @@ class DecoupledGCN(nn.Module):
 
         self.A_in = nn.Parameter(base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
 
-        self.A_out = nn.Parameter(base_adjacency.t().unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
+        # self.A_out = nn.Parameter(base_adjacency.t().unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
 
     def _raw_A(self):
-        return self.I.unsqueeze(0) + self.A_in + self.A_out
+        return self.I.unsqueeze(0) + self.A_in
 
     def _normalized_A(self, A_raw):
         deg = A_raw.sum(-1).clamp(min=1e-6)  # (p, V)
@@ -228,8 +227,7 @@ class SelfPacingDroppingBlock(nn.Module):
                  decouple_p=4, drop=True, use_tcn=True,
                  temporal_kernel_size=9, dropout=0.1):
         super().__init__()
-        if temporal_kernel_size <= 0 or temporal_kernel_size % 2 == 0:
-            raise ValueError("temporal_kernel_size must be a positive odd number")
+
         self.gcn = DecoupledGCN(in_ch, out_ch, num_nodes, base_adjacency, decouple_p)
         self.use_tcn = use_tcn
         self.tcn = TemporalConv(out_ch, kernel_size=temporal_kernel_size if use_tcn else 1,
@@ -238,16 +236,58 @@ class SelfPacingDroppingBlock(nn.Module):
 
     def forward(self, x, mask=None):
         valid = None if mask is None else mask.to(device=x.device, dtype=torch.bool)[:, :, None, None]
-        if valid is not None:
-            x = x.masked_fill(~valid, 0)
+        x = x.masked_fill(~valid, 0)
         feat, _ = self.gcn(x)
-        if valid is not None:
-            feat = feat.masked_fill(~valid, 0)
+        feat = feat.masked_fill(~valid, 0)
+
         if self.use_tcn:
             feat = self.act(self.tcn(feat))
-        if valid is not None:
-            feat = feat.masked_fill(~valid, 0)
+        feat = feat.masked_fill(~valid, 0)
         return feat
+
+
+class V_GCN(DecoupledGCN):
+    """Shape-only input-dependent graph convolution."""
+
+    def forward(self, shape_feature):
+        shape = self.phi(shape_feature)
+        scores = torch.matmul(shape, shape.transpose(-1, -2)) * shape.size(-1) ** -0.5
+        A_shape = (scores.unsqueeze(2) + self.A_in).softmax(dim=-1)
+        A_raw = self.I + A_shape
+        A_norm = self._normalized_A(A_raw)
+        out = torch.einsum("btpvw,btwc->btpvc", A_norm, shape).mean(dim=2)
+        return out, A_raw
+
+
+class V_GCN_Block(nn.Module):
+    """Shape-only counterpart of SelfPacingDroppingBlock."""
+
+    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency,
+                 decouple_p=4, drop=True, use_tcn=True,
+                 temporal_kernel_size=9, dropout=0.1):
+        super().__init__()
+        self.gcn = V_GCN(in_ch, out_ch, num_nodes, base_adjacency,
+                         decouple_p)
+        self.use_tcn = use_tcn
+        self.tcn = TemporalConv(out_ch, kernel_size=temporal_kernel_size if use_tcn else 1,
+                                dropout=dropout)
+        self.act = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, shape_feature, mask=None):
+        valid = (torch.ones(shape_feature.shape[:2], device=shape_feature.device, dtype=torch.bool)
+                 if mask is None else mask.to(device=shape_feature.device, dtype=torch.bool))
+        valid = valid[:, :, None, None]
+
+        shape_feature = shape_feature.masked_fill(~valid, 0)
+
+        feat, _ = self.gcn(shape_feature)
+        feat = feat.masked_fill(~valid, 0)
+
+        if self.use_tcn:
+            feat = self.act(self.tcn(feat))
+
+        return self.dropout(feat).masked_fill(~valid, 0)
 
 
 class SPDStack(nn.Module):

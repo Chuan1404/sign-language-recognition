@@ -123,10 +123,13 @@ class _LandmarkBase(Dataset):
             )
 
             # Mỗi block có D = _NUM_NODE * _COORD_DIM.
-            feats = np.concatenate(
-                [shape_feature, average_feature, position_feature],
-                axis=-1,
-            ).astype(np.float32)
+            feature_blocks = [shape_feature, average_feature, position_feature]
+            if getattr(self, "include_velocity", False):
+                velocity_feature = self.fusion_component.fuse_follow_velocity(
+                    pose, left, right
+                )
+                feature_blocks.append(velocity_feature)
+            feats = np.concatenate(feature_blocks, axis=-1).astype(np.float32)
 
             if self.cache_landmarks:
                 self._feature_cache[vid] = feats
@@ -147,7 +150,9 @@ class WLASLLandmarksDataset(_LandmarkBase):
         indices_dir=None,
         importance_json=None,
         only_important_frames=False,
+        include_velocity=False,
     ):
+        self.include_velocity = include_velocity
         self.indices_dir = indices_dir
         self.importance_json = importance_json
         self.only_important_frames = only_important_frames or (indices_dir is not None)

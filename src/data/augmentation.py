@@ -59,7 +59,22 @@ class SkeletonAugmentor:
         enable_mirror=False,
         enable_noise=True,
         rng=None,
+        enable_viewpoint=False,
+        shoulder_width_range=(0.70, 0.70),
+        hand_shift_range=(0.20, 0.20),
     ):
+        self.enable_viewpoint = enable_viewpoint
+        self.shoulder_width_range = shoulder_width_range
+        self.hand_shift_range = hand_shift_range
+        if not 0 < shoulder_width_range[0] <= shoulder_width_range[1] <= 1:
+            raise ValueError("shoulder_width_range must satisfy 0 < min <= max <= 1")
+        if not 0 <= hand_shift_range[0] <= hand_shift_range[1]:
+            raise ValueError("hand_shift_range must satisfy 0 <= min <= max")
+        kept = [i for i in range(33) if i not in set(_REMOVE_POSE_IDX)]
+        if len(kept) != _N_POSE or 11 not in kept or 12 not in kept:
+            raise ValueError("Viewpoint augmentation requires both shoulders in the kept pose nodes")
+        self.shoulder_indices = (kept.index(11), kept.index(12))
+        self.elbow_indices = tuple(kept.index(node) for node in (13, 14) if node in kept)
         self.rotation_deg = rotation_deg
         self.scale_range = scale_range
         self.noise_std = noise_std
@@ -72,8 +87,11 @@ class SkeletonAugmentor:
         self.enable_noise = enable_noise
         self.rng = rng if rng is not None else np.random.default_rng()
 
-    def __call__(self, fused):
+    def __call__(self, fused, view_direction=None):
         fused = np.asarray(fused, dtype=np.float32)
+        if fused.ndim != 2 or fused.shape[1] not in (
+                NUM_JOINTS * _COORD_DIM, 3 * NUM_JOINTS * _COORD_DIM):
+            raise ValueError("Expected (T, N*C) or (T, 3*N*C)")
         T, flat_dim = fused.shape[0], fused.shape[1]
 
         flatten = NUM_JOINTS * _COORD_DIM  # 55 * 2 = 110
@@ -81,10 +99,10 @@ class SkeletonAugmentor:
 
         blocks = fused.reshape(T, num_blocks, NUM_JOINTS, _COORD_DIM).copy()
 
-        present_mask = ~np.all(blocks[:, 0] == 0, axis=-1)  # (T, N)
+        present_mask = np.any(blocks != 0, axis=(1, 3))  # (T, N)
 
         blocks = self._rotate(blocks)
-        # blocks = self._scale(blocks)
+        blocks = self._scale(blocks)
 
         # ── Gaussian noise ──
         if (
@@ -94,10 +112,54 @@ class SkeletonAugmentor:
         ):
             blocks = self._add_noise(blocks, present_mask)
 
+        if self.enable_viewpoint:
+            blocks = self._simulate_viewpoint(blocks, present_mask, view_direction)
+
         blocks = blocks * present_mask[:, None, :, None]  # broadcast: (T,1,N,1)
         coords = blocks.reshape(T, flat_dim)
 
         return coords.astype(np.float32)
+
+    def _simulate_viewpoint(self, blocks, present_mask, direction=None):
+        """2D view approximation; three-block layout is [shape, average, position].
+
+        Shoulder x-distance shrinks about its midpoint. Hands translate in global
+        blocks only: local wrist-relative shape must not acquire a translation.
+        One strength and direction are used for the entire clip.
+        """
+        if direction is None:
+            direction = "left" if self.rng.random() < 0.5 else "right"
+        if direction not in ("left", "right"):
+            raise ValueError("view_direction must be 'left' or 'right'")
+        result = blocks.copy()
+        left, right = self.shoulder_indices
+        reference = blocks[:, -1]
+        valid_shoulders = (
+            present_mask[:, left] & present_mask[:, right]
+            & np.isfinite(reference[:, [left, right]]).all(axis=(1, 2))
+        )
+        width = np.abs(reference[:, left, 0] - reference[:, right, 0])
+        valid_shoulders &= width > 1e-6
+        factor = self.rng.uniform(*self.shoulder_width_range)
+        strength = self.rng.uniform(*self.hand_shift_range)
+        shift = width * strength * (-1 if direction == "left" else 1)
+        for index in range(blocks.shape[1]):
+            midpoint = (blocks[:, index, left, 0] + blocks[:, index, right, 0]) * 0.5
+            for shoulder in (left, right):
+                narrowed = midpoint + factor * (blocks[:, index, shoulder, 0] - midpoint)
+                result[:, index, shoulder, 0] = np.where(
+                    valid_shoulders, narrowed, blocks[:, index, shoulder, 0]
+                )
+            # Elbows belong to the torso-relative pose block, including shape.
+            # Use the same horizontal displacement as the global hand coordinates.
+            for elbow in self.elbow_indices:
+                elbow_mask = present_mask[:, elbow] & valid_shoulders
+                result[:, index, elbow, 0] += shift * elbow_mask
+            if blocks.shape[1] == 3 and index == 0:
+                continue
+            hand_mask = present_mask[:, _N_POSE:] & valid_shoulders[:, None]
+            result[:, index, _N_POSE:, 0] += shift[:, None] * hand_mask
+        return result
 
     def _rotate(self, coords):
         deg = self.rng.uniform(-self.rotation_deg, self.rotation_deg)
@@ -139,11 +201,11 @@ class SkeletonAugmentor:
     #
     #     return blocks_new, mask_new
 
-    # def _scale(self, coords):
-    #     lo, hi = self.scale_range
-    #     factor = self.rng.uniform(lo, hi)
-    #     return coords * factor
-    #
+    def _scale(self, coords):
+        lo, hi = self.scale_range
+        factor = self.rng.uniform(lo, hi)
+        return coords * factor
+
     def  _add_noise(self, blocks, present_mask):
         noise = self.rng.normal(0.0, self.noise_std, size=blocks.shape).astype(
             np.float32
@@ -166,7 +228,7 @@ class SkeletonAugmentor:
     #     return coords_flat[keep_mask]
 
 class AugmentedSkeletonDataset:
-    def __init__(self, base_dataset, augmentor=None, num_augmentations=1, seed=None):
+    def __init__(self, base_dataset, augmentor=None, num_augmentations=2, seed=None):
         self.base_dataset = base_dataset
         self.num_augmentations = num_augmentations
         self.base_len = len(base_dataset)
@@ -195,6 +257,10 @@ class AugmentedSkeletonDataset:
             return np.array(feature, dtype=np.float32, copy=True), label, video_id
 
         augmentor = self._get_augmentor()
-        feature_aug = augmentor(feature)
+        if isinstance(augmentor, SkeletonAugmentor):
+            direction = "left" if variant % 2 == 1 else "right"
+            feature_aug = augmentor(feature, view_direction=direction)
+        else:
+            feature_aug = augmentor(feature)
 
         return feature_aug, label, video_id

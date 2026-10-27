@@ -8,170 +8,63 @@ from training.train import masked_mean_pool
 
 
 class ISLR_Transformer(nn.Module):
-    def __init__(
-        self,
-        hidden_dim=256,
-        num_encoder_layers=3,
-        nhead=8,
-        dim_feedforward=512 * 4,
-        dropout=0.1,
-        max_seq_len=200,
-        num_classes=1000,
-        num_nodes=_NUM_NODE,
-    ):
+    """Sum shape/average/position/velocity projections before one shared temporal encoder.
+
+    Input: (B, T, 3 * num_nodes * _COORD_DIM + 2 * num_nodes).
+    Ordered shape/average/position/velocity; velocity has signed normalized XY components per node per frame.
+    video_mask: (B, T), True for valid frames. Returns (logits, loss).
+    """
+
+    def __init__(self, hidden_dim=256, num_encoder_layers=3, nhead=8,
+                 dim_feedforward=512 * 4, dropout=0.1, max_seq_len=200,
+                 num_classes=1000, num_nodes=_NUM_NODE):
         super().__init__()
-
-        d_model = hidden_dim
         self.num_nodes = num_nodes
+        self.feature_dim = num_nodes * _COORD_DIM
 
-        self.pose_projection = nn.Sequential(
-            nn.Linear(self.num_nodes * _COORD_DIM, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model)
+        def make_projection(input_dim=self.feature_dim):
+            return nn.Sequential(
+                nn.Linear(input_dim, hidden_dim), nn.GELU(),
+                nn.Dropout(dropout), nn.LayerNorm(hidden_dim),
+            )
+
+        self.shape_projection = make_projection()
+        self.average_projection = make_projection()
+        self.position_projection = make_projection()
+        self.velocity_projection = make_projection(num_nodes * 2)
+
+        self.pos_encoder = PositionalEncoding(hidden_dim, max_seq_len, dropout)
+        layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim, nhead=nhead, dim_feedforward=dim_feedforward,
+            dropout=dropout, batch_first=True, norm_first=True,
         )
-
-        self.pos_encoder = PositionalEncoding(
-            d_model=d_model, max_len=max_seq_len, dropout=dropout
-        )
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True,
-        )
-
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_encoder_layers
-        )
-
-        self.encoder_norm = nn.LayerNorm(d_model)
-        self.classifier = nn.Linear(d_model, num_classes)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=num_encoder_layers)
+        self.encoder_norm = nn.LayerNorm(hidden_dim)
+        self.classifier = nn.Linear(hidden_dim, num_classes)
 
     def encode(self, features, video_mask):
-        if video_mask is None:
-            raise ValueError("video_mask is required")
-
-        video_mask = video_mask.bool()
-
-        x = self.pose_projection(features)
+        video_mask = video_mask.to(device=features.device, dtype=torch.bool)
+        features = features.masked_fill(~video_mask.unsqueeze(-1), 0)
+        shape, average, position, velocity = features.split(
+            [self.feature_dim] * 3 + [self.num_nodes * 2], dim=-1)
+        x = (self.shape_projection(shape)
+             + self.average_projection(average)
+             + self.position_projection(position)
+             + self.velocity_projection(velocity)
+             )
 
         x = self.pos_encoder(x)
-        x = self.encoder(
-            x,
-            src_key_padding_mask=~video_mask,  # True = ignore (padding)
-        )
-        x = self.encoder_norm(x)
-
-        return x
+        x = self.encoder(x, src_key_padding_mask=~video_mask)
+        return self.encoder_norm(x).masked_fill(~video_mask.unsqueeze(-1), 0)
 
     def forward(self, features, labels=None, video_mask=None):
-        x = self.encode(features, video_mask)
-        pooled = masked_mean_pool(x, video_mask.bool())
-        logits = self.classifier(pooled)  # (B, num_classes)
-
+        video_mask = video_mask.to(device=features.device, dtype=torch.bool)
+        encoded = self.encode(features, video_mask)
+        pooled = masked_mean_pool(encoded, video_mask)
+        logits = self.classifier(pooled)
         loss = None
         if labels is not None:
             loss = F.cross_entropy(logits, labels)
-
         return logits, loss
 
-class ISLR_Transformer_Selector(nn.Module):
-    def __init__(
-        self,
-        hidden_dim=128,
-        num_encoder_layers=3,
-        nhead=8,
-        dim_feedforward=128 * 8,
-        dropout=0.2,
-        max_seq_len=5000,
-        num_classes=1000,
-    ):
-        super().__init__()
 
-        d_model = hidden_dim
-        self.num_nodes = _NUM_NODE
-
-        self.pose_projection = nn.Sequential(
-            nn.Linear(self.num_nodes * _COORD_DIM, d_model),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.LayerNorm(d_model),
-        )
-
-
-        self.pos_encoder = PositionalEncoding(
-            d_model=d_model, max_len=max_seq_len, dropout=dropout
-        )
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True,
-        )
-
-        self.encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_encoder_layers
-        )
-        self.encoder_norm = nn.LayerNorm(d_model)
-
-        self.classifier = nn.Linear(d_model, num_classes)
-
-        self.frame_importance_head = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 2, 1),
-        )
-
-    def encode(self, features, video_mask):
-        if video_mask is None:
-            raise ValueError("video_mask is required")
-
-        video_mask = video_mask.bool()
-
-        x = self.pose_projection(features)
-
-        x = self.pos_encoder(x)
-        x = self.encoder(
-            x,
-            src_key_padding_mask=~video_mask,
-        )
-
-        return self.encoder_norm(x)
-
-    def forward(self, features, labels=None, video_mask=None):
-        if video_mask is None:
-            raise ValueError("video_mask is required")
-
-        video_mask = video_mask.bool()
-
-        x = self.encode(features, video_mask)
-
-        frame_scores = self.frame_importance_head(x).squeeze(-1)
-        frame_scores = frame_scores.masked_fill(~video_mask, -1e9)
-
-        frame_importance = torch.softmax(frame_scores, dim=1)
-
-        weights = frame_importance.unsqueeze(-1)
-        pooled = (x * weights).sum(dim=1)
-
-
-        logits = self.classifier(pooled)
-
-        loss = None
-        if labels is not None:
-            loss = F.cross_entropy(logits, labels)
-
-        return {
-            "logits": logits,
-            "loss": loss,
-            "frame_importance": frame_importance,
-            "encoded": x,
-        }

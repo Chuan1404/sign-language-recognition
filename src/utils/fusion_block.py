@@ -13,24 +13,6 @@ class FusionComponent:
     def __init__(self):
         pass
 
-    @staticmethod
-    def mask_below_hips(pose_feature, left_feature, right_feature):
-        """Zero all coordinates below the lowest detected hip, per frame."""
-        T = pose_feature.shape[0]
-
-        pose = np.asarray(pose_feature).reshape(T, 33, _COORD_DIM).copy()
-        left = np.asarray(left_feature).reshape(T, 21, _COORD_DIM).copy()
-        right = np.asarray(right_feature).reshape(T, 21, _COORD_DIM).copy()
-        hips = pose[:, [23, 24]]
-
-        present = np.any(hips != 0, axis=-1) & np.isfinite(hips).all(axis=-1)
-        cutoff = np.where(present, hips[..., 1], -np.inf).max(axis=1)
-        has_hip = present.any(axis=1)
-        for points in (pose, left, right):
-            below = has_hip[:, None] & (points[..., 1] > cutoff[:, None])
-            points[below] = 0
-        return pose, left, right
-
     def fuse(self, pose_feature, left_feature, right_feature):
 
         T = pose_feature.shape[0]
@@ -38,8 +20,6 @@ class FusionComponent:
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
-
-        pose, left, right = self.mask_below_hips(pose, left, right)
 
         all_points = np.concatenate([pose, left, right], axis=1)  # (T, N, 2)
 
@@ -87,8 +67,6 @@ class FusionComponent:
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
 
-        pose, left, right = self.mask_below_hips(pose, left, right)
-
         pose_present_mask = ~np.all(pose == 0, axis=-1)  # [T, 33]
         left_present_mask = ~np.all(left == 0, axis=-1)  # [T, 21]
         right_present_mask = ~np.all(right == 0, axis=-1)  # [T, 21]
@@ -120,31 +98,61 @@ class FusionComponent:
     def fuse_follow_velocity(self, pose_feature, left_feature, right_feature):
         T = pose_feature.shape[0]
 
-        pose = pose_feature.reshape(T, 33, _COORD_DIM)
-        left = left_feature.reshape(T, 21, _COORD_DIM)
-        right = right_feature.reshape(T, 21, _COORD_DIM)
-
-        pose, left, right = self.mask_below_hips(pose, left, right)
+        pose = np.asarray(pose_feature).reshape(T, 33, _COORD_DIM)
+        left = np.asarray(left_feature).reshape(T, 21, _COORD_DIM)
+        right = np.asarray(right_feature).reshape(T, 21, _COORD_DIM)
 
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
-        p = np.concatenate([pose, left, right], axis=1).astype(np.float32)  # (T, N, C)
+        points = np.concatenate([pose, left, right], axis=1).astype(np.float32)
 
-        # mặt nạ: node có mặt (không phải toàn 0)
-        mask = ~np.all(p == 0, axis=-1)  # (T, N)
-        m = mask[..., None]  # (T, N, 1)
+        present = np.any(points != 0, axis=-1) & np.isfinite(points).all(axis=-1)
+        valid_pairs = present[1:] & present[:-1]
+        delta = np.zeros_like(points[1:, :, :2])
 
-        # vận tốc: frame trước - frame sau
-        v = np.zeros_like(p)
-        v[:-1] = (p[:-1] - p[1:]) * (m[:-1] & m[1:])
+        np.subtract(points[1:, :, :2], points[:-1, :, :2],
+                    out=delta, where=valid_pairs[..., None])
 
-        # # gia tốc: vận tốc trước - vận tốc sau
-        # a = np.zeros_like(p)
-        # a[:-1] = (v[:-1] - v[1:]) * (m[:-1] & m[1:])
-
-        # features = np.concatenate([v, a], axis=-1).astype(np.float32)  # (T, N, 3*C)
-        v = v.reshape(T, -1)
-
-        return v
+        velocity = np.zeros((T, points.shape[1], 2), dtype=np.float32)
+        velocity[:-1] = delta
+        speed = np.linalg.norm(velocity, axis=-1)
+        max_speed = speed.max(axis=1, keepdims=True)
+        velocity = np.divide(
+            velocity, max_speed[..., None], out=np.zeros_like(velocity),
+            where=max_speed[..., None] > 0,
+        )
+        normalized_speed = np.divide(
+            speed, max_speed, out=np.zeros_like(speed), where=max_speed > 0
+        )
+        below_threshold = normalized_speed < 0.1
+        removed_mask = below_threshold & (speed > 0)
+        # removed_count = np.count_nonzero(removed_mask)
+        # moving_count = np.count_nonzero(speed > 0)
+        velocity[below_threshold] = 0
+        # print(f"[Velocity] Filtered {removed_count}/{moving_count} moving frame-node pairs (< 0.1).")
+        pose_indices = np.delete(np.arange(33), _REMOVE_POSE_IDX)
+        node_names = ([f"pose[{i}]" for i in pose_indices]
+                      + [f"left_hand[{i}]" for i in range(21)]
+                      + [f"right_hand[{i}]" for i in range(21)])
+        # for frame_idx in np.flatnonzero(removed_mask.any(axis=1)):
+        #     removed_nodes = np.flatnonzero(removed_mask[frame_idx])
+        #     details = ", ".join(
+        #         f"node {i} ({node_names[i]}, speed={normalized_speed[frame_idx, i]:.4f})"
+        #         for i in removed_nodes
+        #     )
+        #     print(f"[Velocity] Frame {frame_idx} -> {frame_idx + 1}: "
+        #           f"removed {len(removed_nodes)} nodes: {details}")
+        hand_removed_mask = removed_mask.copy()
+        hand_removed_mask[:, :len(pose_indices)] = False
+        for frame_idx in np.flatnonzero(hand_removed_mask.any(axis=1)):
+            removed_nodes = np.flatnonzero(hand_removed_mask[frame_idx])
+            details = ", ".join(
+                f"node {i} ({node_names[i]}, speed={normalized_speed[frame_idx, i]:.4f})"
+                for i in removed_nodes
+            )
+            # print(f"[Velocity] Frame {frame_idx} -> {frame_idx + 1}: "
+            #       f"removed {len(removed_nodes)} hand nodes: {details}")
+        # Preserve signed XY velocity for every node, flattened for feature concatenation.
+        return velocity.reshape(T, points.shape[1] * 2)
 
     def fuse_follow_shape(self, pose_feature, left_feature, right_feature):
         T = pose_feature.shape[0]
@@ -152,8 +160,6 @@ class FusionComponent:
         pose = pose_feature.reshape(T, 33, _COORD_DIM).copy()
         left = left_feature.reshape(T, 21, _COORD_DIM).copy()
         right = right_feature.reshape(T, 21, _COORD_DIM).copy()
-
-        pose, left, right = self.mask_below_hips(pose, left, right)
 
         left_present_mask = ~np.all(left == 0, axis=-1)
         right_present_mask = ~np.all(right == 0, axis=-1)
@@ -180,39 +186,6 @@ class FusionComponent:
         pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
 
         fused_coords = np.concatenate([pose, left, right], axis=1)
-        fused_flat = fused_coords.reshape(T, -1)  # (T, D)
-
-        return fused_flat
-
-    def fuse_follow_hand(self, pose_feature, left_feature, right_feature, use_pose=True):
-        T = left_feature.shape[0]
-
-        left = left_feature.reshape(T, 21, _COORD_DIM).copy()
-        right = right_feature.reshape(T, 21, _COORD_DIM).copy()
-
-        pose, left, right = self.mask_below_hips(pose_feature, left, right)
-
-        left_wrist = left[:, 0:1, :].copy()
-        right_wrist = right[:, 0:1, :].copy()
-
-        scale = np.linalg.norm(left_wrist[:, 0] - right_wrist[:, 0], axis=-1, keepdims=True)
-        scale = np.where(scale > _EPS, scale, 1.0)
-        scale = scale[:, np.newaxis, :]
-
-        if use_pose:
-            pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
-
-            left = np.concatenate([pose[:, ::2, :], left], axis=1)
-            right = np.concatenate([pose[:, 1::2, :], right], axis=1)
-
-        normalize_left_hand = self.average_hand(left)
-        normalize_right_hand = self.average_hand(right)
-
-        normalize_left_hand = normalize_left_hand / scale
-        normalize_right_hand = normalize_right_hand / scale
-
-        fused_coords = np.concatenate([normalize_left_hand, normalize_right_hand], axis=1)
-
         fused_flat = fused_coords.reshape(T, -1)  # (T, D)
 
         return fused_flat
@@ -251,33 +224,6 @@ class FusionComponent:
 
         return normalize_hand_feature
 
-    def _relative_hand_inputs(self, left_feature, right_feature):
-        T = left_feature.shape[0]
-
-        left = left_feature.reshape(T, 21, _COORD_DIM).astype(np.float32, copy=True)
-        right = right_feature.reshape(T, 21, _COORD_DIM).astype(np.float32, copy=True)
-
-        left_mask = ~np.all(left == 0, axis=-1)
-        right_mask = ~np.all(right == 0, axis=-1)
-
-        flag = (left_mask.any(axis=1) & right_mask.any(axis=1)).astype(np.float32)[:, None]
-
-        hands = np.concatenate([left, right], axis=1)
-        mask = np.concatenate([left_mask, right_mask], axis=1)
-
-        lowest = np.where(mask[..., None], hands, np.inf).min(axis=1, keepdims=True)
-
-        highest = np.where(mask[..., None], hands, -np.inf).max(axis=1, keepdims=True)
-
-        has_hand = mask.any(axis=1)[:, None, None]
-        lowest = np.where(has_hand, lowest, 0.0)
-        highest = np.where(has_hand, highest, 0.0)
-
-        # Với tọa độ 2D: max(width, height), shape (T, 1, 1).
-        scale = (highest - lowest).max(axis=-1, keepdims=True)
-
-        return left, right, left_mask, right_mask, flag, lowest, scale
-
     def _shoulder_scale(self, pose_feature):
         T = pose_feature.shape[0]
 
@@ -303,37 +249,3 @@ class FusionComponent:
         scale = np.where(valid, scale, 1.0)
 
         return scale[:, None, None]  # (T, 1, 1)
-
-    def fuse_relatively(self, pose_feature, left_feature, right_feature):
-        T = left_feature.shape[0]
-
-        left = left_feature.reshape(T, 21, _COORD_DIM).astype(
-            np.float32, copy=True
-        )
-        right = right_feature.reshape(T, 21, _COORD_DIM).astype(
-            np.float32, copy=True
-        )
-
-        pose, left, right = self.mask_below_hips(pose_feature, left, right)
-
-        left_present_mask = ~np.all(left == 0, axis=-1)
-        right_present_mask = ~np.all(right == 0, axis=-1)
-
-        is_two_hands_flag = (
-                left_present_mask.any(axis=1)
-                & right_present_mask.any(axis=1)
-        ).astype(np.float32)[:, None]
-
-        scale = self._shoulder_scale(pose)  # (T, 1, 1)
-
-        left_normalized = self.normalize_by_wrist(left) / scale
-        right_normalized = self.normalize_by_wrist(right) / scale
-
-        return np.concatenate(
-            [
-                is_two_hands_flag,
-                left_normalized.reshape(T, 21 * _COORD_DIM),
-                right_normalized.reshape(T, 21 * _COORD_DIM),
-            ],
-            axis=1,
-        )

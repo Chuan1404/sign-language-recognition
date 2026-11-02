@@ -15,6 +15,7 @@ from app.utils import (
     detect_pose,
 )
 from config import (
+    _COORD_DIM,
     _REMOVE_POSE_IDX,
 )
 
@@ -37,32 +38,42 @@ class SignDetectionService:
         self.idx2gloss = idx2gloss
 
     def predict(self, pose_buf, left_hand_buf, right_hand_buf, predicted_text):
-        pose_arr = np.stack(pose_buf)
-        left_arr = np.stack(left_hand_buf)
-        right_arr = np.stack(right_hand_buf)
+        return self.predict_topk(pose_buf, left_hand_buf, right_hand_buf)[0]["gloss"]
+
+    def predict_topk(self, pose_buf, left_hand_buf, right_hand_buf, k=5):
+        if not pose_buf or not (len(pose_buf) == len(left_hand_buf) == len(right_hand_buf)):
+            raise ValueError("Expected non-empty, aligned pose and hand buffers.")
+        pose_arr = np.stack(pose_buf)[..., :_COORD_DIM]
+        left_arr = np.stack(left_hand_buf)[..., :_COORD_DIM]
+        right_arr = np.stack(right_hand_buf)[..., :_COORD_DIM]
 
         T, _, _ = pose_arr.shape
 
-        position_features = self.fusion.fuse(pose_arr, left_arr, right_arr)
+        # Match WLASLLandmarksDataset used by main.py exactly.
         shape_features = self.fusion.fuse_follow_shape(pose_arr, left_arr, right_arr)
+        average_features = self.fusion.fuse(pose_arr, left_arr, right_arr)
+        position_features = self.fusion.fuse_follow_position(pose_arr, left_arr, right_arr)
 
-        fused = np.concatenate([position_features, shape_features], axis=-1)
+        fused = np.concatenate([shape_features, average_features, position_features], axis=-1)
+        max_frames = self.model.pos_encoder.pe.shape[1]
+        if T > max_frames:
+            indices = np.linspace(0, T - 1, max_frames).round().astype(np.int64)
+            fused = fused[indices]
+            T = len(fused)
 
-        features = torch.tensor(fused, dtype=torch.float32).unsqueeze(0).cuda()
-        video_mask = torch.ones((1, T)).cuda()
+        device = next(self.model.parameters()).device
+        features = torch.as_tensor(fused, dtype=torch.float32, device=device).unsqueeze(0)
+        video_mask = torch.ones((1, T), dtype=torch.bool, device=device)
 
         with torch.no_grad():
             logits, _loss = self.model(features, video_mask=video_mask)
 
-        _top_probs, top_indices = torch.topk(logits, k=5, dim=-1)
-        output = torch.argmax(logits, dim=1).item()
-        print([self.idx2gloss[idx.item()] for idx in top_indices[0]])
-
-        # if len(predicted_text) > 0:
-        #     results = self.pretrained_model.predict_topk(predicted_text)
-        #     print(results)
-
-        return self.idx2gloss[output]
+        probabilities = torch.softmax(logits, dim=-1)
+        top_probs, top_indices = torch.topk(probabilities, k=min(k, logits.shape[-1]), dim=-1)
+        return [
+            {"gloss": self.idx2gloss[index.item()], "probability": probability.item()}
+            for probability, index in zip(top_probs[0], top_indices[0])
+        ]
 
     def detect(self, rgb_frame, timestamp_ms):
         hand_results = detect_hand(

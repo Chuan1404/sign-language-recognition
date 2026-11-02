@@ -147,6 +147,8 @@ html, body {
 
 /* ── Center column: stream ────────────────────────────── */
 #stream-column {
+  display: flex;
+  flex-direction: column;
   position: relative;
   padding: 12px;
   min-width: 0;
@@ -155,8 +157,9 @@ html, body {
 
 /* Camera — fills the entire column */
 #stream-area {
-  position: absolute;
-  inset: 12px;
+  position: relative;
+  flex: 1;
+  min-height: 0;
   background: #000;
   border-radius: var(--radius-xl);
   overflow: hidden;
@@ -172,8 +175,16 @@ html, body {
 
 #stream-area img {
   height: 100%;
-  width: auto;
+  width: 100%;
+  object-fit: contain;
   display: block;
+}
+
+.camera-instructions {
+  margin: 0 0 10px;
+  color: #94a3b8;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 /* Hint overlays (BACKSPACE / CLEAR positions mirrored for display) */

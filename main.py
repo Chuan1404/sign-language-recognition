@@ -73,8 +73,8 @@ def main(args):
         args.data_path, args.label_path,
         mode=args.val_mode, include_velocity=args.model == "transformer"
     )
-    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor(), num_augmentations=2)
-    # train_dataset = base_train
+    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor(), num_augmentations=2)
+    train_dataset = base_train
 
     val_dataset = base_val
     batch_collate = partial(collate_landmarks, use_all_features=args.model in ("transformer", "transformer_gcn"))
@@ -104,6 +104,7 @@ def main(args):
         "num_classes": num_classes,
         # "num_nodes": NUM_JOINTS,
     }
+
     if args.model == "gcn":
         print("Using model: ISLR_GCN")
         model = ISLR_GCN(**model_kwargs).to(DEVICE)

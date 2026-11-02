@@ -278,11 +278,7 @@ class ISLR_Transformer_VCN(nn.Module):
         for block in self.gcn_block:
             features = block(features, video_mask)
 
-        weights = self.node_attention(features).softmax(dim=2)
-        weights = weights.masked_fill(~video_mask.bool()[:, :, None, None], 0)
-        features = (features * weights).sum(dim=2)  # (B, T, gcn_out)
-        # return self.gcn_proj(x)  # (B, T, d_model)
-        # return self.gcn_output_projection(features)
+        features = features.mean(dim=-2)
         return features
 
     def encode_transformer(self, features, video_mask, x_rgb=None):
@@ -296,12 +292,11 @@ class ISLR_Transformer_VCN(nn.Module):
         x_average = self.average_projection(average_feature)
         x_position = self.position_projection(position_feature)
 
-        x = x_shape + x_average + x_position
+        # x = x_shape + x_average + x_position
 
         # Giữ nhánh GCN hiện tại, đầu vào là shape feature.
-        # x_gcn = self.encode_gcn(average_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
-
-        # x = x_shape + x_average + x_position + x_gcn
+        x_gcn = self.encode_gcn(position_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
+        x = x_shape + x_average + x_position + x_gcn
         # x = x_average                                     # best=73.00% loss=1.2133 75.00%
         # x = x_average + x_gcn                             # best=66.00% loss=1.4254 95.00%
 
@@ -332,14 +327,15 @@ class ISLR_Transformer_VCN(nn.Module):
         shape_feature, average_feature, position_feature = features.split(self.feature_dim, dim=-1)
 
         t = self.encode_transformer(features, video_mask, x_rgb=x_rgb)
-        x_gcn = self.encode_gcn(
-            shape_feature.reshape(B, T, -1, _COORD_DIM),
-            video_mask,
-        )
+        # x_gcn = self.encode_gcn(
+        #     shape_feature.reshape(B, T, -1, _COORD_DIM),
+        #     video_mask,
+        # )
+        # x_gcn = masked_mean_pool(x_gcn, video_mask)
+
 
         t = masked_mean_pool(t, video_mask)
-        x_gcn = masked_mean_pool(x_gcn, video_mask)
-        t = t + x_gcn
+        # t = t + x_gcn
         # t = torch.cat([t, x_gcn], dim=-1)
         logits = self.classifier(t)
 

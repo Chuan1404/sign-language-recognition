@@ -4,7 +4,7 @@ from torch import nn
 
 from config import _COORD_DIM, _N_HAND, _N_POSE, _NUM_NODE
 from src.models.positional_encoding import PositionalEncoding
-from training.train import masked_mean_pool
+from src.training.train import masked_mean_pool
 
 
 class ISLR_Transformer(nn.Module):

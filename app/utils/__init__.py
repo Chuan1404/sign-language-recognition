@@ -1,22 +1,25 @@
 import numpy as np
 import torch
 
-from src.models import ISLR_V4
+from src.models import ISLR_Transformer_VCN
+from config import DEVICE
 
 from .draw_on_frame import *
 
 
-def load_model(model_path, num_classes=100):
-    print("Loading model...")
-
-    model_kwargs = {
-        "num_classes": num_classes,
-    }
-    model = ISLR_V4(**model_kwargs)
-
-    checkpoint = torch.load(model_path, map_location="cuda")
-    model.load_state_dict(checkpoint["model"])
-    model = model.cuda()
+def load_model(model_path, num_classes=100, device=None):
+    device = torch.device(device) if device is not None else DEVICE
+    print(f"Loading landmark model: {model_path} ({device})")
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
+    model_kwargs = dict(checkpoint["model_kwargs"])
+    if model_kwargs.get("num_classes") != num_classes:
+        raise ValueError(
+            f"Checkpoint has {model_kwargs.get('num_classes')} classes, "
+            f"but the label mapping has {num_classes}."
+        )
+    model = ISLR_Transformer_VCN(**model_kwargs)
+    model.load_state_dict(checkpoint["model"], strict=True)
+    model = model.to(device)
     model.eval()
 
     return model

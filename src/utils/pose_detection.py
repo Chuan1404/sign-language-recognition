@@ -1,7 +1,10 @@
+import os
+
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from config import ROOT
 
 mp_drawing_styles = vision.drawing_styles
 mp_drawing_utils = vision.drawing_utils
@@ -10,7 +13,7 @@ mp_drawing_utils = vision.drawing_utils
 class PoseDetection:
     def __init__(self, min_pose_detection_confidence=0.3):
         base_options = python.BaseOptions(
-            model_asset_path=r"../../pretrained/pose_landmarker_heavy.task"
+            model_asset_path=os.path.join(ROOT, "pretrained", "pose_landmarker_heavy.task")
         )
         options = vision.PoseLandmarkerOptions(
             running_mode=vision.RunningMode.VIDEO,

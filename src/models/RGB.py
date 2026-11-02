@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 
-from models.gcn import ISLR_Transformer_GCN
+from src.models.gcn import ISLR_Transformer_GCN
 from src.training.train import masked_mean_pool
 
 BACKBONES = {}

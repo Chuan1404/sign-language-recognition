@@ -12,7 +12,6 @@ from app.services.SignDetectionService import SignDetectionService
 from app.utils import load_model
 from config import ROOT
 from src import FusionComponent, HandDetection, PoseDetection, build_gloss_list
-from src.models import GPTPretrainedModel
 
 
 def create_application():
@@ -22,9 +21,6 @@ def create_application():
     pose_detection = PoseDetection()
     fusion = FusionComponent()
 
-    pretrained_model = GPTPretrainedModel()
-    pretrained_model.load(model_name="gpt2")
-
     label_dir = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 
     wlasl_video_dir = os.path.join(ROOT, "datasets", "raw", "WLASL", "videos")
@@ -33,7 +29,7 @@ def create_application():
         ROOT,
         "outputs",
         "models",
-        "contest_100_v4.pt",
+        "landmarks_100_v1.pt",
     )
 
     with open(
@@ -52,7 +48,7 @@ def create_application():
         pose_detection=pose_detection,
         fusion=fusion,
         model=model,
-        pretrained_model=pretrained_model,
+        pretrained_model=None,
         idx2gloss=idx2gloss,
     )
 

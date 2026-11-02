@@ -36,6 +36,7 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
 
 # WEB
+MIN_SIGN_ZONE_SECONDS = 0.5
 WINDOW_SIZE = 32
 FRAME_W, FRAME_H = 640, 480
 ZONE_W, ZONE_H = 300, 400

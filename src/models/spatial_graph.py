@@ -9,8 +9,13 @@ from torch import nn
 
 from config import _N_HAND, _REMOVE_POSE_IDX, _NUM_NODE, _COORD_DIM
 
-_HAND_BONES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (0, 9), (9, 10), (10, 11), (11, 12),
-               (0, 13), (13, 14), (14, 15), (15, 16), (0, 17), (17, 18), (18, 19), (19, 20)]
+_HAND_BONES = [(0, 1), (0, 5), (0, 9), (0, 13), (0, 17),
+               (1, 2), (2, 3), (3, 4),
+               (5, 6), (6, 7), (7, 8),
+               (9, 10), (10, 11), (11, 12),
+               (13, 14), (14, 15), (15, 16),
+               (17, 18), (18, 19), (19, 20),
+               (5, 9), (9, 13), (13, 17)]
 
 _POSE_BONES = [  # face
     (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8), (9, 10),  # torso / arms
@@ -246,16 +251,36 @@ class SelfPacingDroppingBlock(nn.Module):
         return feat
 
 
-class V_GCN(DecoupledGCN):
-    """Shape-only input-dependent graph convolution."""
+class V_GCN(nn.Module):
+    """Independent graph convolution with input-dependent joint attention."""
 
-    def forward(self, shape_feature):
-        shape = self.phi(shape_feature)
-        scores = torch.matmul(shape, shape.transpose(-1, -2)) * shape.size(-1) ** -0.5
+    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=4):
+        super().__init__()
+
+        self.V = num_nodes
+        self.p = decouple_p
+        self.phi = nn.Linear(in_channels, out_channels)
+
+        base_adjacency = base_adjacency.float()
+        self.register_buffer("I", torch.eye(self.V))
+        self.A_in = nn.Parameter(base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)
+
+    def _normalized_A(self, A_raw):
+        deg = A_raw.sum(-1).clamp(min=1e-6)
+        d_inv_sqrt = deg.pow(-0.5)
+        D_inv_sqrt = torch.diag_embed(d_inv_sqrt)
+
+        return D_inv_sqrt @ A_raw @ D_inv_sqrt
+
+    def forward(self, feature):
+        feat = self.phi(feature)
+
+        scores = torch.matmul(feat, feat.transpose(-1, -2)) * feat.size(-1) ** -0.5
         A_shape = (scores.unsqueeze(2) + self.A_in).softmax(dim=-1)
+
         A_raw = self.I + A_shape
         A_norm = self._normalized_A(A_raw)
-        out = torch.einsum("btpvw,btwc->btpvc", A_norm, shape).mean(dim=2)
+        out = torch.einsum("btpvw,btwc->btpvc", A_norm, feat).mean(dim=2)
         return out, A_raw
 
 

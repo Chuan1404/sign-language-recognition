@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from config import _NUM_NODE, _COORD_DIM
 from models import build_direction_adjacency_from_edges, HAND_EDGES, GCNBlock, PositionalEncoding, ModelOutput, \
-    FULL_BODY_EDGES
+    FULL_BODY_EDGES, V_GCN_Block, build_adjacency_from_edges
 import torch.nn.functional as F
 
 class ISLR_Transformer_GCN_BEST(nn.Module):
@@ -125,3 +125,122 @@ class ISLR_Transformer_GCN_BEST(nn.Module):
             frame_importance=frame_importance,
             encoded=t,
         )
+
+class ISLR_Transformer_VCN_BEST(nn.Module):
+    def __init__(self, gcn_channels=(128, 128, 256, 256), d_model=256, num_encoder_layers=3, nhead=8,
+                 dim_feedforward=256 * 8, dropout=0.1, max_seq_len=300, num_classes=1000,
+                 num_nodes=_NUM_NODE):
+
+        super().__init__()
+        self.num_nodes = num_nodes
+
+        self.A_in = build_adjacency_from_edges(FULL_BODY_EDGES, num_nodes=self.num_nodes, )
+        self.register_buffer("adjacency_matrix", self.A_in)
+        channels = [_COORD_DIM, *gcn_channels]
+
+        self.feature_dim = num_nodes * _COORD_DIM
+
+        def make_projection(input_dim=self.feature_dim):
+            return nn.Sequential(nn.Linear(input_dim, d_model), nn.GELU(), nn.Dropout(dropout),
+                                 nn.LayerNorm(d_model), )
+
+        self.shape_projection = make_projection()
+        self.average_projection = make_projection()
+        self.position_projection = make_projection()
+
+        self.gcn_block = nn.ModuleList(
+            [V_GCN_Block(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix, dropout=dropout) for i in
+             range(len(channels) - 1)])
+
+        self.node_attention = nn.Linear(channels[-1], 1)
+        self.gcn_output_projection = nn.Linear(channels[-1], d_model)
+
+        self.pos_encoder = PositionalEncoding(d_model=d_model, max_len=max_seq_len, dropout=dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward,
+                                                   dropout=dropout, batch_first=True, norm_first=True, )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+        self.encoder_norm = nn.LayerNorm(d_model)
+
+        fusion_dim = d_model
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(fusion_dim), nn.Dropout(dropout), nn.Linear(fusion_dim, num_classes),
+        )
+
+        # self.frame_importance_head = nn.Sequential(nn.Linear(d_model, d_model // 2), nn.GELU(), nn.Dropout(dropout),
+        #     nn.Linear(d_model // 2, 1), )
+
+    def encode_gcn(self, features, video_mask):
+
+        for block in self.gcn_block:
+            features = block(features, video_mask)
+
+        features = features.mean(dim=-2)
+        return features
+
+    def encode_transformer(self, features, video_mask, x_rgb=None):
+        video_mask = video_mask.to(device=features.device, dtype=torch.bool, )
+
+        features = features.masked_fill(~video_mask.unsqueeze(-1), 0)
+        B, T, D = features.shape
+
+        shape_feature, average_feature, position_feature = features.split(self.feature_dim, dim=-1)
+        x_shape = self.shape_projection(shape_feature)
+        x_average = self.average_projection(average_feature)
+        x_position = self.position_projection(position_feature)
+
+        # x = x_shape + x_average + x_position
+
+        # Giữ nhánh GCN hiện tại, đầu vào là shape feature.
+        x_gcn = self.encode_gcn(position_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
+        x = x_shape + x_average + x_position + x_gcn
+        # x = x_average                                     # best=73.00% loss=1.2133 75.00%
+        # x = x_average + x_gcn                             # best=66.00% loss=1.4254 95.00%
+
+        # x = x_position                                    # best=72.00% loss=1.2574 75.00%
+        # x = x_position + x_gcn                            # best=70.00% loss=1.3490 71.00%
+
+        # x = x_shape                                       # best=66.00% loss=1.2873 67.00%
+        # x = x_shape + x_gcn                               # best=59.00% loss=1.3645 67.00%
+
+        # x = x_shape + x_average                           # best=73.00% loss=1.1507 75.00%
+        # x = x_shape + x_average + x_gcn                   # best=71.00% loss=1.1686 74.00
+
+        # x = x_shape + x_average + x_position  # best=75.00% loss=1.0840 77.00%
+        # x = x_shape + x_average + x_position + x_gcn      # best=75.00% loss=1.1256 78.00%
+        # x = x_gcn                                           # best=62.00% loss=1.4346 66.00%
+
+        x = self.pos_encoder(x)
+        x = self.encoder(x, src_key_padding_mask=~video_mask, )
+
+        return self.encoder_norm(x)
+
+    def forward(self, features, labels=None, video_mask=None, x_rgb=None):
+
+        video_mask = video_mask.to(device=features.device, dtype=torch.bool)
+        features = features.masked_fill(~video_mask.unsqueeze(-1), 0)
+        B, T, D = features.shape
+
+        shape_feature, average_feature, position_feature = features.split(self.feature_dim, dim=-1)
+
+        t = self.encode_transformer(features, video_mask, x_rgb=x_rgb)
+        # x_gcn = self.encode_gcn(
+        #     shape_feature.reshape(B, T, -1, _COORD_DIM),
+        #     video_mask,
+        # )
+        # x_gcn = masked_mean_pool(x_gcn, video_mask)
+
+
+        t = masked_mean_pool(t, video_mask)
+        # t = t + x_gcn
+        # t = torch.cat([t, x_gcn], dim=-1)
+        logits = self.classifier(t)
+
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits, labels)
+
+        return ModelOutput(logits=logits,
+                           loss=loss,
+                            encoded=t,
+                           )

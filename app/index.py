@@ -1,4 +1,5 @@
 import os
+import time
 
 import cv2 as cv
 from flask import Response, jsonify, render_template, send_file
@@ -10,7 +11,8 @@ from app.utils import (
     point_in_zone,
     wrist_in_zone,
 )
-from config import _COORD_DIM, BACKSPACE_ZONE, CLEAR_ZONE, FRAME_H, FRAME_W
+from config import _COORD_DIM, BACKSPACE_ZONE, CLEAR_ZONE, FRAME_H, FRAME_W, MIN_SIGN_ZONE_SECONDS
+from app.candidate_picker import CandidatePicker
 
 _ZONE_ANCHOR_POSE_IDX = (11, 12)
 
@@ -24,6 +26,9 @@ class SignDetectionApp:
         self.wlasl_video_dir = wlasl_video_dir
 
         self.predicted_text = []
+        self.picker = CandidatePicker()
+        self.wait_for_release = False
+        self.resume_at = 0.0
 
         self.register_routes()
 
@@ -48,13 +53,16 @@ class SignDetectionApp:
         )
 
     def get_predicted_text(self):
-        return jsonify(words=self.predicted_text)
+        return jsonify(words=self.predicted_text, choosing=self.picker.active)
 
     def get_glosses(self):
         return jsonify(glosses=self.gloss_list)
 
     def clear_text(self):
         self.predicted_text.clear()
+        self.picker.clear()
+        self.wait_for_release = True
+        self.resume_at = time.monotonic() + 0.75
         return jsonify(ok=True)
 
     def serve_video(self, video_id):
@@ -74,6 +82,8 @@ class SignDetectionApp:
         recording = False
         frame_index = 0
         wait_missing = 0
+        in_zone_since = None
+        valid_sign = False
 
         pose_buf = []
         right_hand_buf = []
@@ -152,13 +162,32 @@ class SignDetectionApp:
             )
 
             hand_in_zone = (right_in_zone or left_in_zone) and pose_anchor_in_zone
+            now = time.monotonic()
+            was_selecting = self.picker.active
+            pointer, pointer_hand = self.picker.pointer(
+                left_coors, right_coors, left_detected, right_detected, frame_w, frame_h
+            )
+            if was_selecting:
+                confirmed, word = self.picker.update(
+                    pointer, pointer_hand, now, frame_w, frame_h
+                )
+                if confirmed:
+                    if word is not None:
+                        self.predicted_text.append(word)
+                    self.wait_for_release = True
+                    self.resume_at = now + 0.75
+            elif self.wait_for_release and now >= self.resume_at and not hand_in_zone:
+                self.wait_for_release = False
 
             # -------------------------
             # Start recording
             # -------------------------
 
-            if not recording and hand_in_zone:
+            if (not recording and hand_in_zone and not was_selecting
+                    and not self.picker.active and not self.wait_for_release):
                 recording = True
+                in_zone_since = now
+                valid_sign = False
                 frame_index = 0
                 wait_missing = 0
 
@@ -171,6 +200,15 @@ class SignDetectionApp:
             # -------------------------
 
             if recording:
+                # Only time actually spent continuously in the zone qualifies.
+                # The trailing frames waiting for hands to leave do not count.
+                if hand_in_zone:
+                    if in_zone_since is None:
+                        in_zone_since = now
+                    if now - in_zone_since >= MIN_SIGN_ZONE_SECONDS:
+                        valid_sign = True
+                else:
+                    in_zone_since = None
                 pose_buf.append(pose_coors[:, :_COORD_DIM])
                 right_hand_buf.append(right_coors[:, :_COORD_DIM])
                 left_hand_buf.append(left_coors[:, :_COORD_DIM])
@@ -179,16 +217,19 @@ class SignDetectionApp:
 
                 if not hand_in_zone:
                     if wait_missing > 9:
-                        word = self.service.predict(
-                            pose_buf,
-                            left_hand_buf,
-                            right_hand_buf,
-                            self.predicted_text,
-                        )
+                        if valid_sign:
+                            candidates = self.service.predict_topk(
+                                pose_buf,
+                                left_hand_buf,
+                                right_hand_buf,
+                            )
 
-                        self.predicted_text.append(word)
+                            self.picker.show(candidates, time.monotonic())
+                            self.wait_for_release = True
 
                         recording = False
+                        in_zone_since = None
+                        valid_sign = False
                         wait_missing = 0
                         frame_index = 0
 
@@ -197,18 +238,21 @@ class SignDetectionApp:
                         left_hand_buf = []
 
                     wait_missing += 1
+                else:
+                    wait_missing = 0
 
             # -------------------------
             # Action zones
             # -------------------------
 
-            any_in_backspace = wrist_in_zone(
+            actions_enabled = not (was_selecting or self.picker.active or self.wait_for_release)
+            any_in_backspace = actions_enabled and (wrist_in_zone(
                 right_coors, right_detected, BACKSPACE_ZONE
-            ) or wrist_in_zone(left_coors, left_detected, BACKSPACE_ZONE)
+            ) or wrist_in_zone(left_coors, left_detected, BACKSPACE_ZONE))
 
-            any_in_clear = wrist_in_zone(
+            any_in_clear = actions_enabled and (wrist_in_zone(
                 right_coors, right_detected, CLEAR_ZONE
-            ) or wrist_in_zone(left_coors, left_detected, CLEAR_ZONE)
+            ) or wrist_in_zone(left_coors, left_detected, CLEAR_ZONE))
 
             # Backspace
 
@@ -252,11 +296,17 @@ class SignDetectionApp:
 
             display_frame = cv.flip(frame, 1)
 
-            display_frame = draw_start_zone(display_frame, start_zone, recording)
-
-            display_frame = draw_action_zones(
-                display_frame, any_in_backspace, any_in_clear
-            )
+            if self.picker.active:
+                display_frame = self.picker.draw(display_frame, pointer)
+            else:
+                display_frame = draw_start_zone(display_frame, start_zone, recording)
+                display_frame = draw_action_zones(
+                    display_frame, any_in_backspace, any_in_clear
+                )
+                if self.wait_for_release:
+                    cv.putText(display_frame, "Move hands out of the start zone to continue",
+                               (12, frame_h - 15), cv.FONT_HERSHEY_SIMPLEX, 0.55,
+                               (255, 255, 255), 2, cv.LINE_AA)
 
             # -------------------------
             # JPEG

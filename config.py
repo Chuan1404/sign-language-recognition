@@ -11,7 +11,7 @@ MAX_FRAMES = 100
 
 WLASL_RAW_DATA = os.path.join(ROOT, "datasets/raw/WLASL/videos")
 
-_REMOVE_POSE_IDX = [1, 2, 3, 4, 5, 6, 7, 8, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+_REMOVE_POSE_IDX = [1, 2, 3, 4, 5, 6, 7, 8, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
 # _REMOVE_POSE_IDX = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
 _N_POSE = 33 - len(_REMOVE_POSE_IDX)
 _N_HAND = 21

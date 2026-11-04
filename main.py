@@ -27,7 +27,7 @@ LR = 1e-4
 
 BATCH_SIZE = 8
 EPOCHS = 100
-TOP_K = 2
+TOP_K = 5
 PATIENCE = 20
 
 print(DEVICE)
@@ -73,8 +73,8 @@ def main(args):
         args.data_path, args.label_path,
         mode=args.val_mode, include_velocity=args.model == "transformer"
     )
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor(), num_augmentations=2)
-    train_dataset = base_train
+    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor(), num_augmentations=2)
+    # train_dataset = base_train
 
     val_dataset = base_val
     batch_collate = partial(collate_landmarks, use_all_features=args.model in ("transformer", "transformer_gcn"))

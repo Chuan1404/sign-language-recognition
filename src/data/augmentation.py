@@ -4,45 +4,31 @@ from config import _COORD_DIM, _N_HAND, _N_POSE, _REMOVE_POSE_IDX
 
 NUM_JOINTS = _N_POSE + 2 * _N_HAND
 
-_POSE_LR_PAIRS_RAW = [
-    (11, 12),
-]
+_POSE_LR_PAIRS_RAW = [(1, 4), (2, 5), (3, 6), (7, 8), (9, 10),
+                      (11, 12), (13, 14), (15, 16), (17, 18), (19, 20),
+                      (21, 22), (23, 24), (25, 26), (27, 28), (29, 30),
+                      (31, 32)]
 
 
-# def _build_swap_index():
-#     swap = np.arange(NUM_JOINTS)
-#
-#     removed = set(_REMOVE_POSE_IDX)
-#     kept = [i for i in range(33) if i not in removed]
-#     old_to_new = {old: new for new, old in enumerate(kept)}
-#
-#     for left_old, right_old in _POSE_LR_PAIRS_RAW:
-#         l = old_to_new.get(left_old)
-#         r = old_to_new.get(right_old)
-#         if l is not None and r is not None:
-#             swap[l] = r
-#             swap[r] = l
-#         # if only one side survived the removal, leave it mapped to itself
-#
-#     n_pose_kept = len(kept)
-#     assert n_pose_kept == _N_POSE, (
-#         f"_N_POSE ({_N_POSE}) does not match pose points left after "
-#         f"_REMOVE_POSE_IDX removal ({n_pose_kept}). Check config."
-#     )
-#
-#     # 2) Hand blocks: swap the whole left-hand block with the whole
-#     # right-hand block, index-for-index (finger topology is identical,
-#     # only which array/hand it belongs to changes).
-#     left_start = n_pose_kept
-#     right_start = n_pose_kept + _N_HAND
-#     for i in range(_N_HAND):
-#         swap[left_start + i] = right_start + i
-#         swap[right_start + i] = left_start + i
-#
-#     return swap
+def _build_swap_index():
+    swap = np.arange(NUM_JOINTS)
+    kept = [i for i in range(33) if i not in set(_REMOVE_POSE_IDX)]
+    if len(kept) != _N_POSE:
+        raise ValueError("Kept pose nodes must match _N_POSE")
+    old_to_new = {old: new for new, old in enumerate(kept)}
+    for left, right in _POSE_LR_PAIRS_RAW:
+        if left in old_to_new and right in old_to_new:
+            l, r = old_to_new[left], old_to_new[right]
+            swap[l], swap[r] = r, l
+    left_start = _N_POSE
+    right_start = _N_POSE + _N_HAND
+    for i in range(_N_HAND):
+        swap[left_start + i] = right_start + i
+        swap[right_start + i] = left_start + i
+    return swap
 
 
-# _SWAP_IDX = _build_swap_index()
+_SWAP_IDX = _build_swap_index()
 
 
 class SkeletonAugmentor:
@@ -52,16 +38,17 @@ class SkeletonAugmentor:
         scale_range=(0.8, 1.2),
         noise_std=0.01,
         noise_prob=0.5,
-        frame_dropout_prob=0.1,
+        frame_dropout_prob=0.0,
         max_frame_dropout_ratio=0.1,
         speed_perturb_prob=0.8,
         speed_range=(0.8, 1.25),
-        enable_mirror=False,
+        enable_mirror=True,
         enable_noise=True,
         rng=None,
         enable_viewpoint=False,
         shoulder_width_range=(0.70, 0.70),
         hand_shift_range=(0.20, 0.20),
+        mirror_prob=0.5,
     ):
         self.enable_viewpoint = enable_viewpoint
         self.shoulder_width_range = shoulder_width_range
@@ -84,6 +71,9 @@ class SkeletonAugmentor:
         self.speed_perturb_prob = speed_perturb_prob
         self.speed_range = speed_range
         self.enable_mirror = enable_mirror
+        if not 0 <= mirror_prob <= 1:
+            raise ValueError("mirror_prob must be between 0 and 1")
+        self.mirror_prob = mirror_prob
         self.enable_noise = enable_noise
         self.rng = rng if rng is not None else np.random.default_rng()
 
@@ -101,8 +91,15 @@ class SkeletonAugmentor:
 
         present_mask = np.any(blocks != 0, axis=(1, 3))  # (T, N)
 
-        blocks = self._rotate(blocks)
-        blocks = self._scale(blocks)
+        # blocks = self._rotate(blocks)
+        # blocks = self._scale(blocks)
+
+        if self.enable_mirror and self.rng.random() < self.mirror_prob:
+            blocks, present_mask = self._mirror(blocks, present_mask)
+
+        # if self.rng.random() < self.speed_perturb_prob:
+        #     blocks, present_mask = self._speed_perturb(blocks, present_mask)
+        #     T = blocks.shape[0]
 
         # ── Gaussian noise ──
         if (
@@ -118,7 +115,16 @@ class SkeletonAugmentor:
         blocks = blocks * present_mask[:, None, :, None]  # broadcast: (T,1,N,1)
         coords = blocks.reshape(T, flat_dim)
 
+        if self.rng.random() < self.frame_dropout_prob:
+            coords = self._drop_frames(coords)
+
         return coords.astype(np.float32)
+
+    def _mirror(self, blocks, present_mask):
+        """Reflect normalized x coordinates and swap anatomical left/right joints."""
+        mirrored = blocks[:, :, _SWAP_IDX, :].copy()
+        mirrored[..., 0] *= -1
+        return mirrored, present_mask[:, _SWAP_IDX].copy()
 
     def _simulate_viewpoint(self, blocks, present_mask, direction=None):
         """2D view approximation; three-block layout is [shape, average, position].
@@ -174,32 +180,32 @@ class SkeletonAugmentor:
             raise ValueError(f"Unsupported _COORD_DIM: {_COORD_DIM}")
         return coords @ R.T
 
-    # def _speed_perturb(self, blocks, present_mask):
-    #     T = blocks.shape[0]
-    #     if T <= 2:
-    #         return blocks, present_mask
-    #
-    #     factor = self.rng.uniform(*self.speed_range)
-    #     new_T = max(2, round(T / factor))
-    #     if new_T == T:
-    #         return blocks, present_mask
-    #
-    #     new_idx = np.linspace(0, T - 1, new_T)
-    #
-    #     idx_floor = np.floor(new_idx).astype(np.int64)
-    #     idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
-    #
-    #     extra_dims = blocks.ndim - 1
-    #     frac = (new_idx - idx_floor).astype(np.float32).reshape(-1, *([1] * extra_dims))
-    #
-    #     blocks_new = (
-    #         blocks[idx_floor] * (1.0 - frac) + blocks[idx_ceil] * frac
-    #     ).astype(np.float32)
-    #
-    #     nearest_idx = np.round(new_idx).astype(np.int64)
-    #     mask_new = present_mask[nearest_idx]
-    #
-    #     return blocks_new, mask_new
+    def _speed_perturb(self, blocks, present_mask):
+        T = blocks.shape[0]
+        if T <= 2:
+            return blocks, present_mask
+
+        factor = self.rng.uniform(*self.speed_range)
+        new_T = max(2, round(T / factor))
+        if new_T == T:
+            return blocks, present_mask
+
+        new_idx = np.linspace(0, T - 1, new_T)
+
+        idx_floor = np.floor(new_idx).astype(np.int64)
+        idx_ceil = np.clip(idx_floor + 1, 0, T - 1)
+
+        extra_dims = blocks.ndim - 1
+        frac = (new_idx - idx_floor).astype(np.float32).reshape(-1, *([1] * extra_dims))
+
+        blocks_new = (
+            blocks[idx_floor] * (1.0 - frac) + blocks[idx_ceil] * frac
+        ).astype(np.float32)
+
+        nearest_idx = np.round(new_idx).astype(np.int64)
+        mask_new = present_mask[nearest_idx]
+
+        return blocks_new, mask_new
 
     def _scale(self, coords):
         lo, hi = self.scale_range
@@ -215,20 +221,20 @@ class SkeletonAugmentor:
         ]  # (T, 1, N, 1) → broadcast với (T, B, N, C)
         return blocks + noise * mask
     #
-    # def _drop_frames(self, coords_flat):
-    #     T = coords_flat.shape[0]
-    #     if T <= 2:
-    #         return coords_flat
-    #     max_drop = max(1, int(T * self.max_frame_dropout_ratio))
-    #     n_drop = int(self.rng.integers(1, max_drop + 1))
-    #     n_drop = min(n_drop, T - 2)  # keep at least 2 frames
-    #     drop_idx = self.rng.choice(T, size=n_drop, replace=False)
-    #     keep_mask = np.ones(T, dtype=bool)
-    #     keep_mask[drop_idx] = False
-    #     return coords_flat[keep_mask]
+    def _drop_frames(self, coords_flat):
+        T = coords_flat.shape[0]
+        if T <= 2:
+            return coords_flat
+        max_drop = max(1, int(T * self.max_frame_dropout_ratio))
+        n_drop = int(self.rng.integers(1, max_drop + 1))
+        n_drop = min(n_drop, T - 2)  # keep at least 2 frames
+        drop_idx = self.rng.choice(T, size=n_drop, replace=False)
+        keep_mask = np.ones(T, dtype=bool)
+        keep_mask[drop_idx] = False
+        return coords_flat[keep_mask]
 
 class AugmentedSkeletonDataset:
-    def __init__(self, base_dataset, augmentor=None, num_augmentations=2, seed=None):
+    def __init__(self, base_dataset, augmentor=None, num_augmentations=1, seed=None):
         self.base_dataset = base_dataset
         self.num_augmentations = num_augmentations
         self.base_len = len(base_dataset)

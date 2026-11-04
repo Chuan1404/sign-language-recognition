@@ -1,0 +1,1193 @@
+
+PAGE 1
+Cross-View Isolated Sign Language Recognition via
+View Synthesis and Feature Disentanglement
+Xin Shen1 Xinyu Wang3 Lei Shen4 Kaihao Zhang2 Xin Yu1*
+1The University of Queensland
+2Australian National University 3Zhejiang University 4Institute of Computing Technology, CAS
+xin.shen@uq.edu.au
+Abstract
+Cross-view isolated sign language recognition (CV-ISLR)
+addresses the challenge of identifying isolated signs from
+viewpoints unseen during training, a problem aggravated by
+the scarcity of multi-view data in existing benchmarks. To
+bridge this gap, we introduce a novel two-stage framework
+comprising View Synthesis and Contrastive Multi-task View-
+Semantics Recognition. In the View Synthesis stage, we sim-
+ulate unseen viewpoints by extracting 3D keypoints from the
+front-view training dataset and synthesizing common-view
+2D skeleton sequences with virtual camera rotation, which
+enriches view diversity without the cost of multi-camera
+setups. However, direct training on these synthetic sam-
+ples leads to limited improvement, as viewpoint-specific
+and semantics-specific features remain entangled. To over-
+come this drawback, we present a Contrastive Multi-task
+View-Semantics Recognition (CMVSR) module that disentan-
+gles viewpoint-dependent features from sign semantics. In
+this way, CMVSR obtains view-invariant representations of
+the sign video, leading to robust recognition performance
+against various camera viewpoints. We evaluate our ap-
+proach on the MM-WLAuslan dataset, the first benchmark
+for CV-ISLR, and on our extended protocol MTV-Test that
+includes additional multi-view data captured in the wild.
+Experimental results demonstrate that our method not only
+improves the accuracy of front-view skeleton-based isolated
+sign language recognition, but also exhibits superior gener-
+alization to novel viewpoints. The project page is publicly
+available at CV-ISLR-MTV /gtb.
+1. Introduction
+Isolated Sign Language Recognition (ISLR) plays a crucial
+role in supporting the Deaf and hard-of-hearing communi-
+ties and has garnered significant attention in both academia
+[4, 27, 28, 38–40, 61, 71] and industry [ 2, 41, 43, 47, 57, 60,
+*Corresponding author.
+(a)Cross-View Isolated Sign Language RecognitionTrainAlpahbet
+TestAlpahbet
+(b) Multi-ViewTestSet
+MM-WLAuslanTestSetKinect-V2 RealSense
+Web Camera
+Phone Cameraintegrated
+Figure 1. Illustration of the CV-ISLR challenges and our ex-
+tended test set. (a) Demonstration of the viewpoint discrepancy
+in Cross-View Isolated Sign Language Recognition (CV-ISLR),
+where the top row shows a training “alphabet” sample and the
+bottom row illustrates a test “alphabet” sample captured from a
+different perspective. The highlighted areas emphasize challenges
+such as self-occlusion and hand shape variations. (b) Our newly
+collected MTV-Testset, recorded using consumer-grade devices. It
+introduces a wider range of real-world conditions, including diverse
+viewpoints, backgrounds, and recording devices.
+65]. Recent advancements in deep learning [59, 71] have sub-
+stantially improved the accuracy of ISLR, particularly when
+models are trained and tested on front-view videos [22, 27].
+However, as shown in Figure 1 (a), in practical scenarios,
+This ICCV paper is the Open Access version, provided by the Computer Vision Foundation.
+Except for this watermark, it is identical to the accepted version;
+the final published version of the proceedings is available on IEEE Xplore.
+20647
+
+
+PAGE 2
+cameras are often positioned at arbitrary viewpoints, result-
+ing in a distribution shift that existing methods struggle to
+address. This limitation highlights the need for research
+on cross-view ISLR (CV-ISLR) [33, 39, 42, 53, 55], where
+the goal is to classify isolated signs from viewpoints not
+included in the training set.
+A promising strategy for CV-ISLR involves synthesizing
+multi-view data from front-view videos, allowing models
+to learn from a more diverse set of viewpoints. Neverthe-
+less, we observe that directly training on synthetic multi-
+view samples yields limited gains, as models tend to encode
+viewpoint-dependent cues rather than view-invariant repre-
+sentations. To overcome these challenges, we propose a
+two-stage framework composed of View Synthesis and Con-
+trastive Multi-task View-Semantics Recognition.
+In the View Synthesis stage, we extract 3D whole-body
+keypoints from front-view training data using methods such
+as SMPL-X-based models [5, 30, 63] or image-based regres-
+sion techniques [20, 70]. Instead of synthesizing multi-view
+RGB videos, we focus on 2D skeleton sequences that are
+more efficient to process and less sensitive to background and
+lighting variations [21]. Specifically, we rotate a virtual cam-
+era to diverse yaw and pitch angles, and apply perspective
+transformations to project the 3D keypoints into their corre-
+sponding 2D skeletons. This strategy significantly enriches
+the training data with various viewing directions without the
+need for expensive multi-camera setups.
+In the Contrastive Multi-task View-Semantics Recogni-
+tion stage, our goal is to train robust models on the syn-
+thesized multi-view sign data by effectively disentangling
+viewpoint-specific features from semantics-specific features.
+First, we utilize a cross-attention mechanism [51] to separate
+viewpoint and semantic information from entangled sign
+language embeddings. Concretely, we construct triplets of
+skeletal samples: two sequences that share identical sign
+semantics but differ in their viewpoints, paired with a third
+sequence that maintains the same viewpoint while represent-
+ing distinct semantics. Then, we employ a multi-task learn-
+ing framework that simultaneously predicts sign semantics
+and viewpoints. This design ensures that viewpoint features
+are treated as a distinct learning objective instead of being
+inadvertently entangled in the sign classification pathway. Fi-
+nally, we apply contrastive learning objectives [35] that align
+embeddings of similar viewpoints or semantics while sepa-
+rating mismatched ones. Our approach encourages the model
+to learn truly view-invariant sign representations, thereby
+improving generalization to unseen camera viewpoints.
+To validate our idea, we evaluate our method on the MM-
+WLAuslan dataset [39], the first benchmark specifically de-
+signed for CV-ISLR. However, we note that the original test
+scenarios in MM-WLAuslan lack the sample diversity to
+reflect real-world complexity. To address this, as shown in
+Figure 1 (b), we extend the test set with newly recorded
+videos, named MTV-Test, covering a wide range of cam-
+era viewpoints, devices, and environmental contexts. Our
+method achieves state-of-the-art performance in front-view
+skeleton-based ISLR and consistently excels in challenging
+non-front-view scenarios, demonstrating the effectiveness
+of our view synthesis and view-semantics disentanglement
+approach. In summary, our key contributions are as follows:
+• We introduce a skeleton-based method to synthesize multi-
+view data from front-view sign videos, mitigating the need
+for extensive manual data collection.
+• We design a multi-task disentanglement module that simul-
+taneously predicts sign semantics and viewpoints, guided
+by dual contrastive learning objectives to enhance cross-
+view generalization.
+• We provide a more diverse and realisticMTV-Testset that
+extends the MM-WLAuslan dataset with additional cam-
+era viewpoints and background complexities, offering a
+stronger evaluation protocol for future CV-ISLR studies.
+2. Related Work
+2.1. Isolated Sign Language Recognition Datasets
+A variety of datasets have been developed to advance ISLR
+research and industrial applications. However, many exist-
+ing collections are constrained by factors such as limited
+gloss vocabulary, insufficient contextual depth, or restricted
+camera viewpoints. For instance, the Purdue RVL-SLLL
+dataset [ 31] is methodologically sound under controlled
+conditions, yet it only contains 39 signs, greatly limiting
+its utility for large-scale sign recognition. Similarly, al-
+though the ASLLVD dataset [3] offers an extensive lexicon
+of 3,000 glosses, it relies on a single-camera perspective
+without depth information, which is crucial for capturing
+three-dimensional sign movements. WLASL [27] and MS-
+ASL [22] both expand in terms of signer variety and sign
+categories but still rely on single-view videos without depth
+data, missing essential spatial details for accurate sign inter-
+pretation. Meanwhile, datasets such as CSL 500 [ 17] and
+DGS Kinect 40 [1] include depth information but cover rel-
+atively few glosses, thus restricting their applicability for
+real-world tasks.
+By contrast, MM-WLAuslan [39] is a more comprehen-
+sive dataset for ISLR. It encompasses 3,215 unique signs per-
+formed by 73 signers, with each sign captured from four dis-
+tinct viewpoints alongside depth data, thereby greatly enrich-
+ing both sample diversity and practical usefulness. By pro-
+viding these multiple camera viewpoints, MM-WLAuslan is
+currently the only dataset explicitly designed for cross-view
+ISLR. Furthermore, to better evaluate in-the-wild conditions,
+we introduce an extendedMTV-Testset, which covers a wider
+range of camera perspectives and environmental scenarios.
+20648
+
+
+PAGE 3
+Table 1. Key statistics of MM-WLAuslan dataset splits and our expanded MTV test set. “OOS” and “OOBG” indicate the signers
+and backgrounds only occur in the test set. “STU”, “ITW”, “SYN”, “TED”, “MTV” represent the studio set, in-the-wild set, synthetic
+background set, temporal disturbance set and our newly expanded multi-view set, respectively.
+Split Train Val STU-Test ITW-Test SYN-Test TED-Test MTV-Test
+Number of Videos 38.6k 12.9k 12.9k 12.9k 12.9k 12.9k 12.9k
+Number of Signers 55 53 12 15 62 63 36
+Number of OOS - - 10 2 15 10 36
+Number of Background 1 1 1 1 20 (synthetic) 1 30
+Number of OOBG - - 0 1 20 0 30
+Temporal Disturbance ✗ ✗ ✗ ✗ ✗ ✔ ✔
+Capture Device Types Kinect-V2 Kinect-V2 Kinect-V2 Kinect-V2 Kinect-V2 Kinect-V2 iphone, Samsung, Logitech C922 Pro ...
+Frames per Second (FPS) 30 30 30 30 30 30 10 - 60
+Capture Viewpoints left, right left, right left, right left, right left, right left, right left, right, upward, downward
+2.2. Isolated Sign Language Recognition Methods
+ISLR aims to identify the gloss labels of short-term
+videos [26]. Prior research can be broadly grouped into
+three categories based on the input modality: pixel-based,
+skeleton-based, and multi-modal approaches. Specifically,
+pixel-based methods build upon CNN-based action recogni-
+tion, where early works [7, 8, 25] first employ convolutional
+neural networks (CNNs) to extract frame-level features, and
+then apply temporal modeling through recurrent architec-
+tures. More recent efforts explore 3D CNN variants such
+as C3D [ 18, 23, 48, 56] and I3D [ 6], which jointly cap-
+ture spatiotemporal cues [ 9, 14, 22, 27, 29]. In contrast,
+skeleton-based approaches emphasize key body joints and
+therefore exhibit greater robustness to background clutter,
+illumination changes, and partial occlusions [11, 44, 58, 62].
+ST-GCN [62] pioneers the use of spatiotemporal graph con-
+volutions in action recognition, inspiring various ISLR ex-
+tensions [16, 27, 50, 66], including Transformer-based mod-
+els [4, 15, 26, 51]. Meanwhile, multi-modal approaches,
+which integrate multiple data streams such as pixel, skeleton,
+and depth information, have demonstrated notable perfor-
+mance gains. For example, Zuo et al. [71] employ S3D to
+extract RGB and pose heatmap features, achieving improved
+WLASL [27] recognition, while Jiang et al. [19] incorporate
+depth information to surpass 99% accuracy on AUTSL [46].
+However, due to the limited diversity in training view-
+points, most of these methods are predominantly trained on
+front-view data, resulting in significant performance drops in
+CV-ISLR. In contrast to such approaches, our framework em-
+ploys synthesized multi-view data and applies disentangle-
+ment of viewpoint and sign semantics, thereby substantially
+improving robustness across various viewpoints.
+2.3. Cross-View Action Recognition
+It has been argued [34] that many action recognition (AR)
+techniques can be adapted for sign language tasks. In the
+pursuit of robust real-world systems, whether for ISLR or
+broader AR, multi-view and multi-modal learning is consid-
+ered essential [32]. Recent AR research explores a variety of
+strategies for handling multi-view data [24], including dictio-
+nary learning [10], adaptive neural networks [64], convolu-
+tional pipelines [13], and attention-based mechanisms [69].
+Vision Transformer models have also proven effective in
+multi-view contexts [ 45, 68]. Other contemporary stud-
+ies [54, 67] develop robust view-invariant representations for
+downstream tasks, while DA-Net [52] fuses view-specific
+and view-agnostic modules to achieve better predictive per-
+formance. Methods such as feature factorization [ 37] and
+cascaded residual autoencoders [49] address RGB-D recog-
+nition and incomplete-view classification, respectively.
+Unlike these AR-oriented solutions, our work specifically
+targets CV-ISLR by leveraging synthesized multi-view train-
+ing data. Moreover, we are the first to disentangle viewpoints
+and semantics within a sign language recognition framework,
+providing a promising avenue for effective CV-ISLR.
+3. Cross-View Setup in MM-WLAuslan and the
+Proposed MTV Test Set
+3.1. MM-WLAuslan Setup
+MM-WLAuslan [39] is currently the only dataset explicitly
+designed for Cross-View Isolated Sign Language Recogni-
+tion (CV-ISLR). It contains over 282K RGB-D sign record-
+ings of 3,215 frequently used Auslan glosses, captured from
+four different viewpoints via Kinect and RealSense sensors.
+In contrast to traditional ISLR datasets, often restricted to
+a single viewpoint, MM-WLAuslan provides multiple test
+subsets (Figure 1 (b)), which allow benchmarking under var-
+ious constraints. However, these subsets mostly involve yaw
+angles within ±30◦ and predominantly rely on controlled
+sensor environments, limiting their ability to reflect broader
+real-world complexity. Additionally, the use of RGB-D de-
+vices does not fully emulate the ubiquitous consumer-grade
+cameras found in daily-life scenarios.
+3.2. Proposed MTV-Test Set
+To address these gaps, we propose MTV-Test, a test set that
+greatly expands the diversity of the environment, beyond
+what MM-WLAuslan currently offers. We recruit 36 partic-
+ipants, including Auslan experts, Deaf signers, and volun-
+20649
+
+
+PAGE 4
+teers, ensuring a wide range of signing styles. Each partici-
+pant is instructed on recommended camera viewpoints, gloss
+lists, and recording procedures. Unlike MM-WLAuslan’s
+reliance on RGB-D sensors, our data is collected using
+consumer-grade devices such as smartphones (e.g., iPhone
+and Samsung) and webcams (e.g., Logitech C922 Pro), align-
+ing with real-world usage scenarios. All recordings from
+Auslan experts and deaf signers are maintained in their origi-
+nal forms. For volunteer contributions, five Auslan experts
+strictly review each sample, and remove those that do not
+meet quality or correctness standards. This can ensure that
+only verified sign instances are retained, thereby guarantee-
+ing a reliable dataset for evaluation.
+3.3. Comparison with the MM-WLAuslan Test Set
+Table 1 summarizes key statistics of the MM-WLAuslan
+splits alongside our new MTV-Testset. Compared with the
+original subsets, MTV offers a wider range of camera views
+(including vertical viewpoints), more diverse backgrounds,
+and a greater number of test-only signers unseen during
+training. While MM-WLAuslan mainly focuses on ±30◦
+yaw angles, the upward and downward views included in
+MTV significantly expand the spatial variability. Further-
+more, MTV replaces specialized RGB-D sensors with widely
+available consumer devices, capturing recording conditions
+that better mirror practical deployment scenarios. These
+improvements create a more challenging and comprehen-
+sive cross-view ISLR benchmark, enabling robust model
+evaluation in real-world settings.
+4. Method
+4.1. Task Definition
+Cross-View ISLR requires the model to recognize signs
+from views that are unseen during training [ 39]. Let
+Dtrain = {(xi, yi, vi)}N
+i=1 be the training set, where xi
+is a video of an isolated sign, yi ∈ { 1, . . . , G} is its sign
+semantic label, and vi ∈ V train denotes the viewpoint un-
+der which the sign is recorded. Here, Vtrain = {front} is
+only the frontal view presented in the training data. Dur-
+ing evaluation, we receive samples Dtest = {(xj, vj)}M
+j=1
+where Vtest ∩ Vtrain = ∅. The objective is to learn a func-
+tion f (·) that outputs the correct sign semantic label yj for
+any test sample xj. In CV-ISLR, a promising strategy in-
+volves generating multi-view data from front-view videos,
+thus broadening the range of camera angles that the model
+encounters. Motivated by this idea, we propose a novel two-
+stage framework comprising View Synthesis (VS) and Con-
+trastive Multi-task View-Semantics Recognition (CMVSR).
+4.2. View Synthesis
+In the View Synthesis stage, we aim to synthesize multi-view
+2D skeleton sequences from front-view training videos. We
+frame_00056.png
+							𝜃!		=−45°𝜃"=0
+𝜃!=0𝜃"=0				𝜃!		=	45°𝜃"=	0
+𝜃!	=0𝜃"		=30°𝜃!		=0𝜃"		=−30°
+𝜃!	=0𝜃"		=60°
+ 𝜃!=0𝜃"=−60°
+𝛼=12°𝛽=7°𝛼	=−9°𝛽	=−6°𝛼=−11°𝛽=8°𝛼=13°𝛽=−9°
+(b) Common Viewpoints
+(c) Data Augmentation: Viewpoint Expansion
+(a) Estimated whole-body 3D keypoints
+……
+……
+VideoMesh3DKeypoints
+Figure 2. Illustration of view synthesis and viewpoint augmenta-
+tion. (a) The process of obtaining 3D keypoints and 2D skeletons.
+The pitch angle θx and yaw angle θy define the camera orientation
+in 3D space. (b) The predefined common viewpoints, including
+variations in yaw angles and pitch angles, ensuring a diverse set
+of training perspectives. (c) Viewpoint Expansion via random per-
+turbations, where small variations ( α, β) are added to θx and θy
+during training to enhance generalization to unseen camera angles.
+first extract 3D keypoints from front-view sign language
+videos using SMPLer-X [ 5], a state-of-the-art model for
+estimating expressive human whole-body pose and shape.
+Given an input RGB frame I, SMPLer-X predicts a set of
+3D keypoints P3D ∈ RK×3, where K represents the total
+number of keypoints covering the body, hands and face.
+We then generate multi-view 2D skeletons based on these
+extracted 3D keypoints:
+P2D = Tθ(P3D) = Tθy,θx (P3D), (1)
+where θx ∈ [− π
+2 , π
+2 ] is the pitch angle (up-down tilt),
+θy ∈ [− π
+2 , π
+2 ] is the yaw angle (left-right rotation) and Tθ(·)
+represents a transformation function that includes rotation
+and projection operations. Specifically, Tθ(P3D) first ap-
+plies a controlled 3D rotation to the keypointsP3D, followed
+by a perspective projection to obtain the final transformed
+skeletons P2D. Details of the transformation function are
+provided in the Appendix Section D.
+Compared with synthesizing multi-view RGB videos, us-
+ing 2D skeleton sequences is computationally efficient and
+less sensitive to background and illumination variations [21].
+As shown in Figure 2, we define seven common viewpoints
+that are sufficient to cover most real-world viewing condi-
+tions. Our approach expands viewpoint diversity without
+requiring multi-camera setups, allowing the model to gener-
+alize across unseen perspectives.
+4.3. CMVSR
+After the View Synthesis stage, we obtain an augmented
+skeleton-based multi-view training set:
+20650
+
+
+PAGE 5
+Cross-Attention
+Anchor Sign
+…
+…
+ …
+SameViewDifferentSign
+MLP
+…
+SameSignDifferentView
+…
+HandsPartST-GCN
+Temporal
+Temporal
+ Temporal
+…
+…BodyPartST-GCN
+Temporal
+Temporal
+Temporal
+𝑭𝒃𝒐𝒅𝒚
+𝑭𝒉𝒂𝒏𝒅𝒔
+𝑭𝒔𝒌𝒆𝒍𝒆𝒕𝒐𝒏
+𝑻′𝒔
+𝑭𝒔𝒌𝒆𝒍𝒆𝒕𝒊𝒐𝒏𝒂𝑭𝒔𝒌𝒆𝒍𝒆𝒕𝒊𝒐𝒏𝒔!𝒗" 𝑭𝒔𝒌𝒆𝒍𝒆𝒕𝒊𝒐𝒏𝒔"𝒗!
+𝑻′𝒗𝒔!𝒗"𝑻′𝒔𝒔!𝒗"𝑻′𝒗𝒂 𝑻′𝒔𝒂𝑻′𝒗𝒔"𝒗!
+𝒙𝒗"𝒔!𝒂 𝒙𝒗!𝒔"𝒂𝒙𝒂
+Part-Aware Sign EncoderView-Semantics Disentanglement
+…
+…
+𝑻′𝒔𝒔"𝒗! 𝑭𝒔𝒌𝒆𝒍𝒆𝒕𝒐𝒏𝑻𝒗
+𝑻𝒔
+𝑻′𝒗
+softmaxattention mapCross-Attention
+…QKV
+mean
+Layer 1Layer 2Layer 3
+Layer 1Layer 2Layer 3
+MLP𝒑𝒔𝒂
+𝑳𝒂𝒏𝒄𝒉𝒐𝒓_𝒔𝒊𝒈𝒏𝒄𝒆
+MLP𝒑𝒗𝒂
+𝑳𝒂𝒏𝒄𝒉𝒐𝒓_𝒗𝒊𝒆𝒘𝒄𝒆
+𝑳𝒔𝒊𝒈𝒏𝒄𝒐𝒏𝒕
+𝑳𝒗𝒊𝒆𝒘𝒄𝒐𝒏𝒕
+Figure 3. Overview of the proposed Contrastive Multi-task View-Semantics Recognition (CMVSR) framework. It consists of three
+components: Part-Aware Sign Encoder, View-Semantics Disentanglement and Contrastive Multi-task Learning paradigm.
+D′
+train =
+V[
+j=1
+{(Tθj (xi), yi, vj) | (xi, yi) ∈ Dtrain, vj ∈ Vaug},
+Vaug = Vtrain ∪ {v1, . . . , vV },
+(2)
+where {v1, . . . , vV } is the set of additional viewpoints gen-
+erated through Tθj . Inspired by [ 12, 33, 36, 45], we pro-
+pose a Contrastive Multi-task View-Semantics Recognition
+(CMVSR) approach that effectively utilizes skeleton-based
+multi-view ISLR datasets.
+As illustrated in Figure 3 (left), our CMVSR framework
+comprises three core components: (1) a Part-Aware Sign
+Encoder to obtain structured pose information, (2) a View-
+Semantics Disentanglement module to separate semantics-
+relevant and view-relevant features, and (3) a Contrastive
+Multi-task Learning paradigm that imposes view-invariance
+on sign representations and jointly predicts sign semantics
+and viewpoints.
+Part-Aware Sign Encoder via PA-ST-GCN.To effectively
+capture structured skeleton representations, we employ a
+Part-Aware Spatial Temporal Graph Convolutional Network
+(PA-ST-GCN) that partitions the skeleton into two compo-
+nents: the upper body (Kb = 13 keypoints) and the two
+hands (Kh = 42 keypoints). This division enables better
+spatial-temporal feature extraction using ST-GCN [21, 62].
+Given a sequence of 2D skeleton keypoints S = [Sbody,
+Shands], where Sbody ∈ Rf ×13×2 denotes the upper body
+pose sequence, Shands ∈ Rf ×42×2 represents pose sequence
+of the two hands, and f is the total number of frames. Each
+part is independently processed using ST-GCN:
+Fbody = ST-GCN(Sbody, Ab), (3)
+Fhands = ST-GCN(Shands, Ah), (4)
+where Ab and Ah denote the learned adjacency matrices
+for the body and hands. The extracted features from both
+parts are concatenated and then projected into a unified latent
+space using a multi-layer perceptron (MLP):
+Fskeleton = MLP(Concat(Fbody, Fhands)). (5)
+The hierarchical feature extraction process ensures that both
+upper-body motion and fine-grained hand movements are
+effectively captured in a compact representation.
+To enhance model generalization, we introduce two ran-
+domized data augmentation methods that are applied dy-
+namically during CMVSR training. These augmentations
+address viewpoint variations and temporal inconsistencies in
+real-world recordings:
+(1) Viewpoint Expansion. To increase viewpoint diversity,
+we apply random perturbations to the predefined common
+views during training. As shown in Figure 2 (c), given a
+synthesized pose sequence with pitch and yaw angles θx, θy,
+we introduce random offsets:
+θ′
+x = θx + α, θ ′
+y = θy + β. (6)
+This prevents the model from overfitting to fixed viewpoints
+and improves robustness to unseen angles.
+(2) Temporal Perturbation. To simulate real-world record-
+ing inconsistencies [39], we propose the following random
+temporal augmentations:
+• Random Clipping: The first and last portions of the se-
+quence are randomly removed, with the truncation ratio
+sampled from r ∼ U (1/5, 1/3), where r represents the
+proportion of the sequence to be removed from both ends.
+• Speed Variation: The sequence speed is randomly adjusted
+by a scaling factor γ ∼ U (0.5, 2.0), where γ < 1.0 repre-
+sents slow motion and γ > 1.0 represents speed-up.
+20651
+
+
+PAGE 6
+Note that the augmentations occur randomly at each training
+iteration, ensuring the diverse and robust learning process.
+View-Semantics Disentanglement via Cross-Attention.
+To disentangle sign semantics and viewpoint features, we
+propose a Cross-Attention Disentangler. We initialize two
+groups of learnable tokens: a view token Tv ∈ RD and
+semantic tokens Ts ∈ RC×D, where D is the feature dimen-
+sion and C is the predefined number of semantic tokens. The
+extracted skeleton feature representation Fskeleton ∈ RT ×D
+is linearly projected to obtain the key (K) and the value
+(V), while the concatenation of the view and semantic to-
+kens [Tv, Ts] ∈ R(C+1)×D forms the query (Q) . Cross-
+attention [51] is then applied to update the tokens:
+[T ′
+v, T ′
+s] = CrossAttn(Q, K, V ), (7)
+where T ′
+v ∈ RD is the refined view token andT ′
+s ∈ RC×D is
+the refined semantic tokens after attending to the sign repre-
+sentations. To obtain the final disentangled representations,
+we aggregate the T ′
+s by computing the mean across the first
+dimension, reducing its shape from RC×D to RD.
+Contrastive Multi-task Learning. To enforce the disentan-
+glement of view and semantics representations, we employ
+a contrastive learning strategy based on triplet sampling. For
+each anchor sign sample ( xa), we sample two additional
+instances: (1) a sample of the same sign semantics but from
+a different viewpoint ( xa
+s+v−) and (2) a sample from the
+same viewpoint but belonging to a different sign semantics
+(xa
+s−v+). This ensures that the model learns representations
+that are robust to viewpoint variations while maintaining the
+discriminability of sign semantics.
+Each sampled skeleton sequence undergoes feature extrac-
+tion via the Part-Aware Sign Encoderand View-Semantics
+Disentanglement, producing disentangled representations for
+views and semantics. Specifically, given an anchor sample
+xa, a semantic variant xa
+s−v+, and a view variant xa
+s+v−, we
+obtain the following refined view and semantic tokens:
+T ′a
+v , T ′a
+s = M(xa), (8)
+T ′s−v+
+v , T ′s−v+
+s = M(xa
+s−v+ ), (9)
+T ′s+v−
+v , T ′s+v−
+s = M(xa
+s+v− ), (10)
+where M(·) denotes the feature extraction model consisting
+of PA-ST-GCN and Cross-Attention-based disentanglement.
+To promote view-invariance in sign representations, we
+apply the triplet contrastive loss [35] (Lcont) to pull the sign
+representations of the anchor and viewpoint-variant sample
+closer while pushing the anchor and semantics-variant apart:
+Lcont
+sign =
+X
+i
+max(0, d(T ′a
+s , T ′s−v+
+s ) − d(T ′a
+s , T ′s+v−
+s )),
+(11)
+where d(·, ·) is a distance function (e.g., cosine or Euclidean
+distance). Similarly, to enforce viewpoint separability, we
+apply a contrastive loss on the view representations:
+Lcont
+view =
+X
+i
+max(0, d(T ′a
+v , T ′s+v−
+v ) − d(T ′a
+v , T ′s−v+
+v )).
+(12)
+Contrastive learning [35] ensures that the extracted skeleton-
+based sign representations are invariant to viewpoint varia-
+tions while maintaining clear separability between different
+sign semantics.
+Additionally, we employ a multi-layer perceptron (MLP)
+followed by a softmax layer to classify both sign semantics
+and viewpoint for each anchor sample:
+Lce
+anchor_sign = −
+X
+i
+ysign, i log psign, i, (13)
+Lce
+anchor_view = −
+X
+j
+yview, j log pview, j. (14)
+By jointly predicting sign semantics and viewpoints, our
+framework learns distinct yet complementary embeddings.
+Loss Computation. The overall loss function consists of
+classification loss and contrastive learning objectives:
+L = w1Lce
+anchor_sign + w2Lce
+anchor_view + w3Lcont
+sign + w4Lcont
+view,
+(15)
+where all the loss weights are set to 1. Our training scheme
+enforces robust view-semantics disentanglement, ensuring
+that sign language representations remain consistent across
+a wide range of viewpoints. In addition, it enables accurate
+predictions for both sign language semantics and viewpoints.
+5. Experiment
+In this section, we first introduce the MM-WLAuslan [39]
+dataset and the evaluation metric. Then we conduct experi-
+ments to evaluate the effectiveness of CMVSR on the com-
+prehensive MM-WLAuslan benchmark, demonstrating its
+ability to generalize across diverse viewpoints. Additionally,
+we perform an ablation study to analyze the contribution of
+each component in our method.
+5.1. Dataset
+We use the MM-WLAuslan dataset [39] along with our ex-
+panded MTV-Test set for evaluation. More details can be
+found in Section 3.
+5.2. Evaluation Metric
+Top-k Accuracy is defined as the proportion of test instances
+where the ground-truth label appears among the model’s
+top k predicted classes. It is particularly suitable for ISLR-
+related [27, 39] tasks with a large set of possible outcomes.
+5.3. Implementation Details
+For a fair comparison, we follow the same protocol as pre-
+vious methods and use 64-frame pose sequences as input.
+20652
+
+
+PAGE 7
+Table 2. Performance comparison (Top-1 and Top-5, %) on MM-WLAuslan.“F” denotes the frontal view, while “MV” refers to any
+other viewpoint except the frontal view.
+Model Test Data Type STU ITW SYN TED MTV A VG.
+Top-1 Top-5 Top-1 Top-5 Top-1 Top-5 Top-1 Top-5 Top-1 Top-5 Top-1 Top-5
+KVNet-V [71] F Pixel 84.51 97.57 39.88 68.00 56.56 82.18 70.31 90.86 - - 62.82 84.65
+NLA-SLR [71] F Pixel + 2D Pose 86.32 97.79 79.05 94.91 84.26 96.16 77.98 91.76 - - 81.90 95.16
+STC-SLR [66] F 2D Pose 79.92 95.88 74.35 93.92 76.02 93.50 63.11 87.33 - - 73.35 92.65
+DSTA-SLR [16] F 2D Pose 82.33 96.31 74.96 93.98 78.10 93.78 66.84 88.99 - - 75.55 93.26
+KVNet-K [71] F 2D Pose 82.88 96.70 76.29 94.56 79.07 94.07 69.05 89.80 - - 76.82 93.78
+CMVSR (Ours) F 2D Pose 84.45 97.17 81.47 96.53 77.44 93.00 69.28 89.41 - - 78.16 94.03
+KVNet-V [71] MV Pixel 23.60 48.10 8.70 23.28 9.94 26.53 15.90 35.41 5.28 12.51 12.68 29.17
+NLA-SLR [71] MV Pixel + 2D Pose 38.91 66.31 29.37 54.98 35.78 62.53 28.84 53.33 15.02 33.84 29.58 54.20
+STC-SLR [66] MV 2D Pose 29.05 60.04 26.84 56.21 27.19 52.66 19.81 43.44 9.76 15.45 22.53 45.56
+DSTA-SLR [16] MV 2D Pose 32.54 59.07 30.31 57.13 28.89 54.32 22.91 44.48 12.46 24.83 25.42 47.97
+KVNet-K [71] MV 2D Pose 27.33 52.06 28.97 54.53 31.76 57.71 24.08 47.92 11.30 20.78 24.69 46.60
+CMVSR (Ours) MV 2D Pose 49.17 73.02 43.73 68.22 40.35 64.02 39.23 64.32 31.14 54.36 40.72 64.79
+In the Part-Aware ST-GCN, each part is processed through
+3 ST-GCN blocks [62], where the adjacency matrices are
+initially constructed based on human anatomy and further
+optimized during training. In the Cross-Attention module,
+the view token and semantic tokens are initialized with a
+feature dimension of 1024, and we employ 2 layers of 8-
+head cross-attention to disentangle viewpoint-specific and
+semantics-specific representations. By default, the view
+token consists of a single learnable embedding, while the
+semantic tokens are initialized as 64 learnable embeddings,
+allowing the model to capture diverse sign-related features
+effectively. The model is trained with a batch size of 128
+for 50 epochs, using the ADAM optimizer with an initial
+learning rate of 1 × 10−4, scheduled by CosineAnnealingLR.
+Additionally, our proposed data augmentation techniques, in-
+cluding viewpoint perturbation and temporal distortion, are
+applied during training to improve robustness. By default,
+the common viewpoints are set to seven predefined view-
+points, as illustrated in Figure 2. The synthesized multi-view
+data generated from these viewpoints are then used to further
+train CMVSR.
+5.4. Comparison with the State-of-the-art Methods
+Table 2 compares our proposed CMVSR against various
+state-of-the-art methods, including pixel-based, skeleton-
+based, and multi-modal approaches, under both front-view
+and cross-view settings. From the front-view scenario, we
+observe that all methods perform relatively well, thanks to
+the more constrained viewpoint. Nevertheless, skeleton-
+based approaches (e.g., STC-SLR [ 66], DSTA-SLR [16],
+KVNet-K [71]) demonstrate stronger resilience in complex
+backgrounds (ITW, SYN), where pixel-based methods de-
+grade under clutter or lighting variations. Our CMVSR
+yields the highest accuracy among skeleton-based models,
+nearly matching multi-modal performance, underscoring the
+efficacy of our view-sign disentanglement strategy.
+When the test viewpoint shifts beyond the frontal view
+(MV), all models experience noticeable drops in accu-
+racy. Pixel-based methods, in particular, exhibit significant
+performance degradation, reflecting their heavier reliance
+on viewpoint-dependent features. By contrast, CMVSR
+achieves marked gains over existing skeleton-based tech-
+niques, suggesting that synthesizing diverse viewpoints and
+applying contrastive multi-task learning effectively enhance
+cross-view robustness. Overall, our proposed CMVSR main-
+tains a more consistent performance between frontal and
+non-frontal settings, confirming its ability to handle real-
+world variations in camera placement.
+5.5. Ablation Study
+Impacts of the View Synthesis. Figure 4 compares the per-
+formance of DSTA-SLR [16] and our method when progres-
+sively adding more camera viewpoints in the View Synthesis
+stage. We evaluate on both MM-WLAuslan and MTV-Test
+sets. On MM-WLAuslan, accuracy increases as we expand
+from purely frontal views (0◦, 0◦) to moderate angles like
+(0◦, ±30◦) or (0◦, ±60◦). However, when we further add
+larger vertical angles (±45◦, 0◦), performance saturates be-
+cause MM-WLAuslan does not contain upward or downward
+views in its test subset. In contrast, our new MTV-Test set
+features a richer variety of camera viewpoints, including sub-
+stantial deviations in both yaw and pitch. As a result, perfor-
+mance continues to improve each time additional viewpoints
+are synthesized. This suggests that introducing more diverse
+views during training meaningfully benefits recognition on
+in-the-wild scenarios, where camera viewpoints can deviate
+significantly from the frontal norm.
+Impacts of the Contrastive Multi-task Loss. Table 3 com-
+pares using different combinations of losses for two skeleton-
+based backbones: DSTA-SLR [ 16] and our CMVSR. We
+begin with a simple anchor-based sign classification loss
+Lce
+anchor_sign, then gradually add viewpoint classification
+20653
+
+
+PAGE 8
+Figure 4. Impacts of the number of synthesized common views.
+Numberof Common Views1357(0°,0°) 0°,0°,(0°,±30°) 0°,0°,0°,±30°,0°,±60°0°,0°,±45°,0°0°,±30°,0°,±60°
+DSTA-SLR Test onMM-WLAuslanTestDSTA-SLR Test on MTV TestCMVSRTest on MM-WLAuslanTestCMVSR Test on MTV Test
+Table 3. Impacts of the CMVSR loss.
+Backbone Lce
+anchor_sign Lce
+anchor_view Lcont
+sign Lcont
+view A VG. Top-1
+DSTA-SLR
+[16]
+✔ 33.49
+✔ ✔ 35.88
+✔ ✔ ✔ 39.02
+✔ ✔ ✔ ✔ 40.25
+CMVSR
+(Ours)
+✔ 34.36
+✔ ✔ 36.54
+✔ ✔ ✔ 40.34
+✔ ✔ ✔ ✔ 40.72
+Lce
+anchor_view, sign-based contrastive loss Lcont
+sign, and finally
+viewpoint contrastive loss Lcont
+view. As each additional ob-
+jective is introduced, performance improves consistently. In
+particular, jointly predicting the sign semantics and view-
+points (Lce
+anchor_sign + Lce
+anchor_view) already yields a notable
+accuracy gain, indicating that viewpoint supervision helps
+the model learn more disentangled representations. Fur-
+thermore, incorporating the contrastive objectives (Lcont
+sign and
+Lcont
+view) leads to an even larger boost, suggesting that con-
+trastive learning further reinforces view invariance and sign
+semantics discriminability.
+Impacts of the Number of Semantic Tokens.Our CMVSR
+employs multiple learnable semantic tokens to capture rich
+variation in sign-language gestures. Table 5 compares the
+performance of using 32, 64, and 128 semantic tokens. We
+observe that setting the number of tokens to 32 limits the
+expressiveness of the sign embeddings, resulting in relatively
+lower accuracy. Increasing to 64 tokens yields a substantial
+boost in both Top-1 and Top-5 accuracy, indicating that a
+moderate token capacity helps encapsulate diverse skeleton
+patterns. However, further increasing to 128 tokens degrades
+performance, likely due to overfitting and the model’s dif-
+ficulty in effectively optimizing a larger parameter space.
+Thus, we choose 64 tokens as the best trade-off between
+representation power and generalization.
+Impacts of the Viewpoint Expansion. We next investigate
+how varying the range of random viewpoint perturbations
+affects performance. Table 4 reports our results when using
+either 3 or 7 common views, each perturbed by random
+offsets (α, β). We observe that moderate angles satisfying
+|α| < 10, |β| < 15 lead to the highest accuracy, providing
+enough viewpoint diversity without excessively distorting
+the skeleton. By contrast, very large offsets can blur the
+boundaries between viewpoints, while very small offsets
+Table 4. Impacts of the viewpoint expansion.
+Num. Common Views (α, β) A VG. Top-1 A VG. Top-5
+3
+(0◦, 0◦) 32.42 55.82
+(±5◦, ±10◦) 35.06 56.20
+(±10◦, ±15◦) 37.28 59.86
+(±15◦, ±20◦) 34.08 56.91
+7
+(0◦, 0◦) 37.57 57.88
+(±5◦, ±10◦) 39.25 60.10
+(±10◦, ±15◦) 40.72 64.79
+(±15◦, ±20◦) 38.92 62.42
+Table 5. Impacts of the number of semantic tokens.
+Num. Semantic Tokens Top-1 A VG. Top-5 A VG.
+32 38.49 61.48
+64 40.72 64.79
+128 28.17 49.92
+Table 6. Impacts of the temporal perturbation.
+Random Clipping Speed Variation TED-Test MTV-Test
+36.75 27.88
+✔ 38.49 28.80
+✔ 37.90 29.75
+✔ ✔ 39.23 31.14
+may fail to capture real-world camera variations.
+Impacts of the Temporal Perturbation.Finally, we explore
+temporal data augmentation, which simulates real-world in-
+consistencies like truncated clips and varying frame rates. In
+Table 6, we evaluate random clipping and speed variation on
+two test sets (TED-Test and MTV-Test) that explicitly contain
+temporal disturbances. Either augmentation alone improves
+performance compared to no augmentation, and combin-
+ing both yields the highest accuracy. We hypothesize that
+random clipping prevents the model from over-relying on
+the start/end frames, while speed variation addresses the di-
+verse frame rates observed across different consumer devices
+(ranging from 10 to 60 FPS inMTV-Test). Collectively, these
+strategies strengthen the model’s robustness to incomplete
+or temporally mismatched sign videos.
+6. Conclusion
+In this paper, we investigate the critical challenge of Cross-
+View-ISLR, wherein limited multi-view training data and
+viewpoint mismatches often hinder model performance in
+real-world applications. To mitigate these issues, we propose
+a two-stage approach: View Synthesis, which enriches train-
+ing data via virtual 3D skeleton rotations, and Contrastive
+Multi-task View-Semantics Recognition, which disentangles
+viewpoint cues and semantic cues from sign embeddings.
+Extensive experiments on MM-WLAuslan and our newMTV-
+Test set demonstrate our method’s robustness against diverse
+camera viewpoints and complex backgrounds, outperform-
+ing pixel-based and skeleton-based CV-ISLR baselines. Our
+work paves the way for more reliable and in-the-wild ISLR
+solutions to benefit deaf and hard-of-hearing communities
+in real-world scenarios.
+20654
+
+
+PAGE 9
+Acknowledgement
+This research is funded in part by ARC-Discovery grant
+(DP220100800 to XY), ARC-DECRA grant (DE230100477
+to XY) and Google Research Scholar Program. We also
+gratefully thank all the anonymous reviewers and ACs for
+their constructive comments.
+References
+[1] Kinect gesture dataset. https://www.microsoft.
+com / en - us / download / details . aspx ? id =
+52283, 2019. Accessed: 2019-07-16.
+[2] ASL-Kids. Asl-kids, 2024. Accessed: 2024-12-01.
+[3] Vassilis Athitsos, Carol Neidle, Stan Sclaroff, Joan P. Nash,
+Alexandra Stefan, Quan Yuan, and Ashwin Thangali. The
+american sign language lexicon video dataset. In IEEE Con-
+ference on Computer Vision and Pattern Recognition, CVPR
+Workshops 2008, Anchorage, AK, USA, 23-28 June, 2008 ,
+pages 1–8. IEEE Computer Society, 2008.
+[4] Matyáš Boháˇcek and Marek Hrúz. Sign pose-based trans-
+former for word-level sign language recognition. In Proceed-
+ings of the IEEE/CVF Winter Conference on Applications of
+Computer Vision (WACV) Workshops, pages 182–191, 2022.
+[5] Zhongang Cai, Wanqi Yin, Ailing Zeng, Chen Wei, Qing-
+ping Sun, Wang Yanjun, Hui En Pang, Haiyi Mei, Mingyuan
+Zhang, Lei Zhang, et al. Smpler-x: Scaling up expressive
+human pose and shape estimation. Advances in Neural Infor-
+mation Processing Systems, 36:11454–11468, 2023.
+[6] João Carreira and Andrew Zisserman. Quo vadis, action
+recognition? A new model and the kinetics dataset. In 2017
+IEEE Conference on Computer Vision and Pattern Recog-
+nition, CVPR 2017, Honolulu, HI, USA, July 21-26, 2017 ,
+pages 4724–4733. IEEE Computer Society, 2017.
+[7] Runpeng Cui, Hu Liu, and Changshui Zhang. Recurrent
+convolutional neural networks for continuous sign language
+recognition by staged optimization. In 2017 IEEE Confer-
+ence on Computer Vision and Pattern Recognition, CVPR
+2017, Honolulu, HI, USA, July 21-26, 2017 , pages 1610–
+1618. IEEE Computer Society, 2017.
+[8] Runpeng Cui, Hu Liu, and Changshui Zhang. A deep neu-
+ral framework for continuous sign language recognition by
+iterative training. IEEE Trans. Multim., 21(7):1880–1891,
+2019.
+[9] Aashaka Desai, Lauren Berger, Fyodor Minakov, Nessa Mi-
+lano, Chinmay Singh, Kriston Pumphrey, Richard E. Ladner,
+Hal Daumé III, Alex X. Lu, Naomi Caselli, and Danielle
+Bragg. ASL citizen: A community-sourced dataset for ad-
+vancing isolated sign language recognition. In Advances in
+Neural Information Processing Systems 36: Annual Con-
+ference on Neural Information Processing Systems 2023,
+NeurIPS 2023, New Orleans, LA, USA, December 10 - 16,
+2023, 2023.
+[10] Zan Gao, Hai-Zhen Xuan, Hua Zhang, Shaohua Wan, and
+Kim-Kwang Raymond Choo. Adaptive fusion and category-
+level dictionary learning model for multiview human action
+recognition. IEEE Internet of Things Journal , 6(6):9280–
+9293, 2019.
+[11] Shannan Guan, Xin Yu, Wei Huang, Gengfa Fang, and
+Haiyan Lu. DMMG: dual min-max games for self-supervised
+skeleton-based action recognition. IEEE Trans. Image Pro-
+cess., 33:395–407, 2024.
+[12] Tianyu Guo, Hong Liu, Zhan Chen, Mengyuan Liu, Tao
+Wang, and Runwei Ding. Contrastive learning from ex-
+tremely augmented skeleton sequences for self-supervised
+action recognition. In Proceedings of the AAAI conference on
+artificial intelligence, pages 762–770, 2022.
+[13] Tong Hao, Dan Wu, Qian Wang, and Jin-Sheng Sun. Multi-
+view representation learning for multi-view action recognition.
+Journal of Visual Communication and Image Representation,
+48:453–460, 2017.
+[14] Al Amin Hosain, Panneer Selvam Santhalingam, Parth H.
+Pathak, Huzefa Rangwala, and Jana Kosecká. Hand pose
+guided 3d pooling for word-level sign language recognition.
+In IEEE Winter Conference on Applications of Computer
+Vision, WACV 2021, Waikoloa, HI, USA, January 3-8, 2021,
+pages 3428–3438. IEEE, 2021.
+[15] Hezhen Hu, Weichao Zhao, Wengang Zhou, Yuechen Wang,
+and Houqiang Li. Signbert: Pre-training of hand-model-
+aware representation for sign language recognition. In 2021
+IEEE/CVF International Conference on Computer Vision,
+ICCV 2021, Montreal, QC, Canada, October 10-17, 2021 ,
+pages 11067–11076. IEEE, 2021.
+[16] Lianyu Hu, Liqing Gao, Zekang Liu, and Wei Feng. Dy-
+namic spatial-temporal aggregation for skeleton-aware sign
+language recognition. In Proceedings of the 2024 Joint In-
+ternational Conference on Computational Linguistics, Lan-
+guage Resources and Evaluation, LREC/COLING 2024, 20-
+25 May, 2024, Torino, Italy, pages 5450–5460. ELRA and
+ICCL, 2024.
+[17] Jie Huang, Wengang Zhou, Houqiang Li, and Weiping Li.
+Attention-based 3d-cnns for large-vocabulary sign language
+recognition. IEEE Transactions on Circuits and Systems for
+Video Technology, 29(9):2822–2832, 2018.
+[18] Yangqing Jia, Evan Shelhamer, Jeff Donahue, Sergey Karayev,
+Jonathan Long, Ross B. Girshick, Sergio Guadarrama, and
+Trevor Darrell. Caffe: Convolutional architecture for fast
+feature embedding. In Proceedings of the ACM Interna-
+tional Conference on Multimedia, MM ’14, Orlando, FL,
+USA, November 03 - 07, 2014, pages 675–678. ACM, 2014.
+[19] Songyao Jiang, Bin Sun, Lichen Wang, Yue Bai, Kunpeng
+Li, and Yun Fu. Skeleton aware multi-modal sign language
+recognition. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition Workshops, 2021.
+[20] Tao Jiang, Xinchen Xie, and Yining Li. Rtmw: Real-time
+multi-person 2d and 3d whole-body pose estimation. arXiv
+preprint arXiv:2407.08634, 2024.
+[21] Peiqi Jiao, Yuecong Min, Yanan Li, Xiaotao Wang, Lei Lei,
+and Xilin Chen. Cosign: Exploring co-occurrence signals
+in skeleton-based continuous sign language recognition. In
+Proceedings of the IEEE/CVF international conference on
+computer vision, pages 20676–20686, 2023.
+[22] Hamid Reza Vaezi Joze and Oscar Koller. MS-ASL: A large-
+scale data set and benchmark for understanding american sign
+language. In 30th British Machine Vision Conference 2019,
+20655
+
+
+PAGE 10
+BMVC 2019, Cardiff, UK, September 9-12, 2019, page 100.
+BMV A Press, 2019.
+[23] Andrej Karpathy, George Toderici, Sanketh Shetty, Thomas
+Leung, Rahul Sukthankar, and Li Fei-Fei. Large-scale video
+classification with convolutional neural networks. In 2014
+IEEE Conference on Computer Vision and Pattern Recogni-
+tion, CVPR 2014, Columbus, OH, USA, June 23-28, 2014 ,
+pages 1725–1732. IEEE Computer Society, 2014.
+[24] Muhammed Kocabas, Salih Karagoz, and Emre Akbas. Self-
+supervised learning of 3d human pose using multi-view geom-
+etry. In Proceedings of the IEEE/CVF conference on computer
+vision and pattern recognition, pages 1077–1086, 2019.
+[25] Oscar Koller, Necati Cihan Camgoz, Hermann Ney, and
+Richard Bowden. Weakly supervised learning with multi-
+stream cnn-lstm-hmms to discover sequential parallelism in
+sign language videos. IEEE transactions on pattern analysis
+and machine intelligence, 42(9):2306–2320, 2019.
+[26] Taeryung Lee, Yeonguk Oh, and Kyoung Mu Lee. Human
+part-wise 3d motion context learning for sign language recog-
+nition. In IEEE/CVF International Conference on Computer
+Vision, ICCV 2023, Paris, France, October 1-6, 2023, pages
+20683–20693. IEEE, 2023.
+[27] Dongxu Li, Cristian Rodriguez, Xin Yu, and Hongdong Li.
+Word-level deep sign language recognition from video: A
+new large-scale dataset and methods comparison. In The
+IEEE Winter Conference on Applications of Computer Vision,
+pages 1459–1469, 2020.
+[28] Dongxu Li, Chenchen Xu, Xin Yu, Kaihao Zhang, Benjamin
+Swift, Hanna Suominen, and Hongdong Li. Tspnet: Hier-
+archical feature learning via temporal semantic pyramid for
+sign language translation. In Advances in Neural Information
+Processing Systems 33: Annual Conference on Neural Infor-
+mation Processing Systems 2020, NeurIPS 2020, December
+6-12, 2020, virtual, 2020.
+[29] Dongxu Li, Xin Yu, Chenchen Xu, Lars Petersson, and Hong-
+dong Li. Transferring cross-domain knowledge for video
+sign language recognition. In 2020 IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, CVPR 2020, Seat-
+tle, WA, USA, June 13-19, 2020, pages 6204–6213. Computer
+Vision Foundation / IEEE, 2020.
+[30] Jing Lin, Ailing Zeng, Haoqian Wang, Lei Zhang, and Yu
+Li. One-stage 3d whole-body mesh recovery with component
+aware transformer. In Proceedings of the IEEE/CVF Con-
+ference on Computer Vision and Pattern Recognition, pages
+21159–21168, 2023.
+[31] Aleix M. Martínez, Ronnie B. Wilbur, Robin Shay, and
+Avinash C. Kak. Purdue RVL-SLLL ASL database for au-
+tomatic recognition of american sign language. In 4th IEEE
+International Conference on Multimodal Interfaces (ICMI
+2002), 14-16 October 2002, Pittsburgh, PA, USA, pages 167–
+172. IEEE Computer Society, 2002.
+[32] Suneetha Mopidevi, M. V . D. Prasad, and Polurie Venkata Vi-
+jay Kishore. Multiview meta-metric learning for sign lan-
+guage recognition using triplet loss embeddings. Pattern
+Anal. Appl., 26(3):1125–1141, 2023.
+[33] Yuting Peng, Peiqi Jiao, Honggang Zou, Yuecong Min, and
+Xilin Chen. Synthetic view augmentation for sign language
+recognition. In Companion Proceedings of the ACM on Web
+Conference 2025, pages 2448–2452, 2025.
+[34] Noha Sarhan and Simone Frintrop. Transfer learning for
+videos: from action recognition to sign language recognition.
+In 2020 IEEE International Conference on Image Processing,
+pages 1811–1815. IEEE, 2020.
+[35] Florian Schroff, Dmitry Kalenichenko, and James Philbin.
+Facenet: A unified embedding for face recognition and clus-
+tering. In Proceedings of the IEEE conference on computer
+vision and pattern recognition, pages 815–823, 2015.
+[36] Ketul Shah, Anshul Shah, Chun Pong Lau, Celso M de Melo,
+and Rama Chellappa. Multi-view action recognition using
+contrastive learning. In Proceedings of the ieee/cvf winter
+conference on applications of computer vision, pages 3381–
+3391, 2023.
+[37] Amir Shahroudy, Tian-Tsong Ng, Yihong Gong, and Gang
+Wang. Deep multimodal feature analysis for action recogni-
+tion in rgb+ d videos. IEEE transactions on pattern analysis
+and machine intelligence, 40(5):1045–1058, 2017.
+[38] Xin Shen, Shaozu Yuan, Hongwei Sheng, Heming Du, and
+Xin Yu. Auslan-daily: Australian sign language translation
+for daily communication and news. In Advances in Neural
+Information Processing Systems 36: Annual Conference on
+Neural Information Processing Systems 2023, NeurIPS 2023,
+New Orleans, LA, USA, December 10 - 16, 2023, 2023.
+[39] Xin Shen, Heming Du, Hongwei Sheng, Shuyun Wang, Hui
+Chen, Huiqiang Chen, Zhuojie Wu, Xiaobiao Du, Jiaying
+Ying, Ruihan Lu, Qingzheng Xu, and Xin Yu. Mm-wlauslan:
+Multi-view multi-modal word-level australian sign language
+recognition dataset. In Advances in Neural Information Pro-
+cessing Systems 38: Annual Conference on Neural Informa-
+tion Processing Systems 2024, NeurIPS 2024, Vancouver, BC,
+Canada, December 10 - 15, 2024, 2024.
+[40] Xin Shen, Lei Shen, Shaozu Yuan, Heming Du, Haiyang Sun,
+and Xin Yu. Diverse sign language translation. arXiv preprint
+arXiv:2410.19586, 2024.
+[41] Xin Shen, Heming Du, Hongwei Sheng, Lincheng Li, and
+Kaihao Zhang. Auslanweb: A scalable web-based australian
+sign language communication system for deaf and hearing
+individuals. In Proceedings of the ACM on Web Conference
+2025, pages 5212–5223, 2025.
+[42] Xin Shen, Heming Du, Miao Xu, Miaomiao Liu, and Xin
+Yu. Cross-view isolated sign language recognition challenge:
+Design, results and future research. In Companion Proceed-
+ings of the ACM on Web Conference 2025, pages 2444–2447,
+2025.
+[43] Hongwei Sheng, Xin Shen, Heming Du, Hu Zhang, Zi Huang,
+and Xin Yu. Ai empowered auslan learning for parents of deaf
+children and children of deaf adults. AI and Ethics, pages
+1–11, 2024.
+[44] Chenyang Si, Ya Jing, Wei Wang, Liang Wang, and Tieniu
+Tan. Skeleton-based action recognition with spatial reasoning
+and temporal stack learning. InComputer Vision - ECCV 2018
+- 15th European Conference, Munich, Germany, September
+8-14, 2018, Proceedings, Part I. Springer, 2018.
+[45] Nyle Siddiqui, Praveen Tirupattur, and Mubarak Shah.
+Dvanet: Disentangling view and action features for multi-
+20656
+
+
+PAGE 11
+view action recognition. In Proceedings of the AAAI Confer-
+ence on Artificial Intelligence, pages 4873–4881, 2024.
+[46] Ozge Mercanoglu Sincan and Hacer Yalim Keles. AUTSL:
+A large scale multi-modal turkish sign language dataset and
+baseline methods. IEEE Access, 8:181340–181355, 2020.
+[47] River Tae Smith, Louisa Willoughby, and Trevor Johnston. In-
+tegrating Auslan resources into the language data commons of
+Australia. In Proceedings of the LREC2022 10th Workshop on
+the Representation and Processing of Sign Languages: Multi-
+lingual Sign Language Resources, pages 181–186, Marseille,
+France, 2022. European Language Resources Association.
+[48] Du Tran, Lubomir D. Bourdev, Rob Fergus, Lorenzo Torre-
+sani, and Manohar Paluri. Learning spatiotemporal features
+with 3d convolutional networks. In 2015 IEEE International
+Conference on Computer Vision, ICCV 2015, Santiago, Chile,
+December 7-13, 2015 , pages 4489–4497. IEEE Computer
+Society, 2015.
+[49] Luan Tran, Xiaoming Liu, Jiayu Zhou, and Rong Jin. Missing
+modalities imputation via cascaded residual autoencoder. In
+Proceedings of the IEEE conference on computer vision and
+pattern recognition, pages 1405–1414, 2017.
+[50] Anirudh Tunga, Sai Vidyaranya Nuthalapati, and Juan P.
+Wachs. Pose-based sign language recognition using GCN and
+BERT. In IEEE Winter Conference on Applications of Com-
+puter Vision Workshops, WACV Workshops 2021, Waikoloa,
+HI, USA, January 5-9, 2021, pages 31–40. IEEE, 2021.
+[51] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia
+Polosukhin. Attention is all you need. Advances in neural
+information processing systems, 30, 2017.
+[52] Dongang Wang, Wanli Ouyang, Wen Li, and Dong Xu. Divid-
+ing and aggregating network for multi-view action recogni-
+tion. In Proceedings of the European conference on computer
+vision, pages 451–467, 2018.
+[53] Fei Wang, Kun Li, Yiqi Nie, Zhangling Duan, Peng Zou, Zhil-
+iang Wu, Yuwei Wang, and Yanyan Wei. Exploiting ensemble
+learning for cross-view isolated sign language recognition.
+In Companion Proceedings of the ACM on Web Conference
+2025, pages 2453–2457, 2025.
+[54] Heng Wang, Alexander Kläser, Cordelia Schmid, and Cheng-
+Lin Liu. Dense trajectories and motion boundary descriptors
+for action recognition. Int. J. Comput. Vis., 103(1), 2013.
+[55] Xinyu Wang. Cross-view isolated sign language recognition
+with graph. In Companion Proceedings of the ACM on Web
+Conference 2025, pages 2458–2462, 2025.
+[56] Yizhe Wang, Congqi Cao, and Yanning Zhang. Visual-
+semantic network: a visual and semantic enhanced model
+for gesture recognition. Vis. Intell., 1(1), 2023.
+[57] Yiwei Wei, Shaozu Yuan, Meng Chen, Xin Shen, Longbiao
+Wang, Lei Shen, and Zhiling Yan. Mpp-net: Multi-perspective
+perception network for dense video captioning. Neurocom-
+puting, 552:126523, 2023.
+[58] Philippe Weinzaepfel, Zaïd Harchaoui, and Cordelia Schmid.
+Learning to track for spatio-temporal action localization. In
+2015 IEEE International Conference on Computer Vision,
+ICCV 2015, Santiago, Chile, December 7-13, 2015 , pages
+3164–3172. IEEE Computer Society, 2015.
+[59] Saining Xie, Chen Sun, Jonathan Huang, Zhuowen Tu, and
+Kevin Murphy. Rethinking spatiotemporal feature learning:
+Speed-accuracy trade-offs in video classification. In Com-
+puter Vision - ECCV 2018 - 15th European Conference, Mu-
+nich, Germany, September 8-14, 2018, Proceedings, Part XV,
+pages 318–335. Springer, 2018.
+[60] Chenchen Xu, Dongxu Li, Hongdong Li, Hanna Suominen,
+and Ben Swift. Automatic gloss dictionary for sign language
+learners. In Proceedings of the 60th Annual Meeting of the As-
+sociation for Computational Linguistics, ACL 2022 - System
+Demonstrations, Dublin, Ireland, May 22-27, 2022 , pages
+83–92. Association for Computational Linguistics, 2022.
+[61] Wanli Xue, Jingze Liu, Siyi Yan, Yuxi Zhou, Tiantian Yuan,
+and Qing Guo. Alleviating data insufficiency for chinese sign
+language recognition. Vis. Intell., 1(1), 2023.
+[62] Sijie Yan, Yuanjun Xiong, and Dahua Lin. Spatial tempo-
+ral graph convolutional networks for skeleton-based action
+recognition. In Proceedings of the Thirty-Second AAAI Con-
+ference on Artificial Intelligence, pages 7444–7452. AAAI
+Press, 2018.
+[63] Wanqi Yin, Zhongang Cai, Ruisi Wang, Ailing Zeng, Chen
+Wei, Qingping Sun, Haiyi Mei, Yanjun Wang, Hui En Pang,
+Mingyuan Zhang, et al. Smplest-x: Ultimate scaling for
+expressive human pose and shape estimation. arXiv preprint
+arXiv:2501.09782, 2025.
+[64] Pengfei Zhang, Cuiling Lan, Junliang Xing, Wenjun Zeng,
+Jianru Xue, and Nanning Zheng. View adaptive neural net-
+works for high performance skeleton-based human action
+recognition. IEEE Trans. Pattern Anal. Mach. Intell., 41(8):
+1963–1978, 2019.
+[65] Yanxiao Zhang, Yuecong Min, and Xilin Chen. Teaching
+chinese sign language with a smartphone. Virtual Real. Intell.
+Hardw., 3(3):248–260, 2021.
+[66] Weichao Zhao, Wengang Zhou, Hezhen Hu, Min Wang, and
+Houqiang Li. Self-supervised representation learning with
+spatial-temporal consistency for sign language recognition.
+IEEE Trans. Image Process., 33:4188–4201, 2024.
+[67] Jingjing Zheng, Zhuolin Jiang, and Rama Chellappa. Cross-
+view action recognition via transferable dictionary learning.
+IEEE Transactions on Image Processing, 25(6):2542–2556,
+2016.
+[68] Kaijun Zhu, Ruxin Wang, Qingsong Zhao, Jun Cheng, and
+Dapeng Tao. A cuboid cnn model with an attention mecha-
+nism for skeleton-based action recognition. IEEE Transac-
+tions on Multimedia, 22(11):2977–2989, 2019.
+[69] Yisheng Zhu and Guangcan Liu. Fine-grained action recogni-
+tion using multi-view attentions. Vis. Comput., 36(9):1771–
+1781, 2020.
+[70] Yue Zhu, Nermin Samet, and David Picard. H3wb: Human3.
+6m 3d wholebody dataset and benchmark. In Proceedings of
+the IEEE/CVF international conference on computer vision,
+pages 20166–20177, 2023.
+[71] Ronglai Zuo, Fangyun Wei, and Brian Mak. Natural language-
+assisted sign language recognition. In IEEE/CVF Conference
+on Computer Vision and Pattern Recognition, CVPR 2023,
+Vancouver, BC, Canada, June 17-24, 2023 , pages 14890–
+14900. IEEE, 2023.
+20657

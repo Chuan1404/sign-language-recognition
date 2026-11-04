@@ -1,3 +1,4 @@
+from src.models.spatial_graph import RandomFingerMask
 import torch
 import torch.nn as nn
 from config import _NUM_NODE, _COORD_DIM
@@ -133,6 +134,7 @@ class ISLR_Transformer_VCN_BEST(nn.Module):
 
         super().__init__()
         self.num_nodes = num_nodes
+        self.finger_mask = RandomFingerMask(num_nodes)
 
         self.A_in = build_adjacency_from_edges(FULL_BODY_EDGES, num_nodes=self.num_nodes, )
         self.register_buffer("adjacency_matrix", self.A_in)
@@ -149,7 +151,7 @@ class ISLR_Transformer_VCN_BEST(nn.Module):
         self.position_projection = make_projection()
 
         self.gcn_block = nn.ModuleList(
-            [V_GCN_Block(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix, dropout=dropout) for i in
+            [V_GCN_Block(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix, use_tcn=False, dropout=dropout) for i in
              range(len(channels) - 1)])
 
         self.node_attention = nn.Linear(channels[-1], 1)
@@ -171,6 +173,7 @@ class ISLR_Transformer_VCN_BEST(nn.Module):
         #     nn.Linear(d_model // 2, 1), )
 
     def encode_gcn(self, features, video_mask):
+        # features = self.finger_mask(features)
 
         for block in self.gcn_block:
             features = block(features, video_mask)

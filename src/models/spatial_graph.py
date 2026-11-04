@@ -251,6 +251,34 @@ class SelfPacingDroppingBlock(nn.Module):
         return feat
 
 
+class RandomFingerMask(nn.Module):
+    """Mask one finger per hand and sample, consistently across all frames."""
+
+    def __init__(self, num_nodes):
+        super().__init__()
+        if _N_HAND != 21 or num_nodes < 2 * _N_HAND:
+            raise ValueError("Finger masking requires two 21-joint MediaPipe hands")
+        self.num_nodes = num_nodes
+
+    def forward(self, features):
+        if not self.training:
+            return features
+        if features.ndim != 4 or features.shape[2] != self.num_nodes:
+            raise ValueError("Expected features with shape (B, T, num_nodes, C)")
+        batch = features.shape[0]
+        # Layout: retained pose joints, left hand, right hand. Wrist index is 0.
+        hand_offsets = torch.tensor(
+            [self.num_nodes - 2 * _N_HAND, self.num_nodes - _N_HAND],
+            device=features.device,
+        )
+        fingers = torch.randint(5, (batch, 2), device=features.device)
+        joints = (hand_offsets[None, :, None] + 1 + 4 * fingers[:, :, None]
+                  + torch.arange(4, device=features.device))
+        keep = torch.ones(batch, self.num_nodes, dtype=torch.bool, device=features.device)
+        keep.scatter_(1, joints.reshape(batch, 8), False)
+        return features.masked_fill(~keep[:, None, :, None], 0)
+
+
 class V_GCN(nn.Module):
     """Independent graph convolution with input-dependent joint attention."""
 
@@ -277,8 +305,9 @@ class V_GCN(nn.Module):
 
         scores = torch.matmul(feat, feat.transpose(-1, -2)) * feat.size(-1) ** -0.5
         A_shape = (scores.unsqueeze(2) + self.A_in).softmax(dim=-1)
-
         A_raw = self.I + A_shape
+
+        # A_raw = self.I.unsqueeze(0) + self.A_in
         A_norm = self._normalized_A(A_raw)
         out = torch.einsum("btpvw,btwc->btpvc", A_norm, feat).mean(dim=2)
         return out, A_raw
@@ -311,6 +340,9 @@ class V_GCN_Block(nn.Module):
 
         if self.use_tcn:
             feat = self.act(self.tcn(feat))
+
+        if not self.use_tcn:
+            feat = self.act(feat)
 
         return self.dropout(feat).masked_fill(~valid, 0)
 

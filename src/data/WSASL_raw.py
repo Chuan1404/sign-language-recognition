@@ -13,6 +13,7 @@ from config import _COORD_DIM, _NUM_NODE, IMAGE_SIZE, MAX_FRAMES
 from src.utils.rgb import normalize_imagenet
 from src.utils import FusionComponent
 from src.data.video_filter import excluded_video_ids
+from src.data.augmentation import rotate_hand_blocks
 
 NUM_JOINTS = _NUM_NODE
 
@@ -558,7 +559,7 @@ class MultiFeatureSkeletonAugmentor:
         # Giữ các vector 0: có thể là điểm thiếu hoặc điểm gốc.
         nonzero_mask = np.any(blocks != 0, axis=-1)
 
-        blocks = blocks @ rotation.T
+        blocks = rotate_hand_blocks(blocks, rotation)
         blocks *= self.rng.uniform(*self.scale_range)
 
         if (

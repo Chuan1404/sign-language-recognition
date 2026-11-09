@@ -1,4 +1,5 @@
-from src.models.spatial_graph import RandomFingerMask
+from src.models.best_performance import ISLR_Transformer_VCN as _BestVCN
+from src.models.spatial_graph import FingerMaskVariants, RandomFingerMask
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -118,7 +119,7 @@ class ISLR_GCN(nn.Module):
 
 
 class ISLR_Transformer_GCN(nn.Module):
-    def __init__(self, gcn_channels=(32, 64, 128, 256), d_model=256, num_encoder_layers=3, nhead=8,
+    def __init__(self, gcn_channels=(32, 32, 64, 128, 256), d_model=256, num_encoder_layers=3, nhead=8,
                  dim_feedforward=512 * 4, dropout=0.1, max_seq_len=300, num_classes=1000,
                  num_nodes=_NUM_NODE, single_feature=False):
         super().__init__()
@@ -230,14 +231,14 @@ class ISLR_Transformer_GCN(nn.Module):
                             encoded=t,
                            )
 
-class ISLR_Transformer_VCN(nn.Module):
+class ISLR_Transformer_FCN(nn.Module):
     def __init__(self, gcn_channels=(128, 128, 256, 256), d_model=256, num_encoder_layers=3, nhead=8,
                  dim_feedforward=256 * 8, dropout=0.1, max_seq_len=300, num_classes=1000,
                  num_nodes=_NUM_NODE):
 
         super().__init__()
         self.num_nodes = num_nodes
-        self.finger_mask = RandomFingerMask(num_nodes)
+        self.finger_mask = FingerMaskVariants(num_nodes)
 
         self.A_in = build_adjacency_from_edges(FULL_BODY_EDGES, num_nodes=self.num_nodes, )
         self.register_buffer("adjacency_matrix", self.A_in)
@@ -254,7 +255,7 @@ class ISLR_Transformer_VCN(nn.Module):
         self.position_projection = make_projection()
 
         self.gcn_block = nn.ModuleList(
-            [V_GCN_Block(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix, use_tcn=True, dropout=dropout) for i in
+            [V_GCN_Block(channels[i], channels[i + 1], self.num_nodes, self.adjacency_matrix, decouple_p=1, use_tcn=False, dropout=dropout) for i in
              range(len(channels) - 1)])
 
         self.node_attention = nn.Linear(channels[-1], 1)
@@ -267,7 +268,8 @@ class ISLR_Transformer_VCN(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
         self.encoder_norm = nn.LayerNorm(d_model)
 
-        fusion_dim = d_model
+        # Transformer context + original GCN embedding + five ablation deltas.
+        fusion_dim = d_model + 6 * channels[-1]
         self.classifier = nn.Sequential(
             nn.LayerNorm(fusion_dim), nn.Dropout(dropout), nn.Linear(fusion_dim, num_classes),
         )
@@ -276,15 +278,17 @@ class ISLR_Transformer_VCN(nn.Module):
         #     nn.Linear(d_model // 2, 1), )
 
     def encode_gcn(self, features, video_mask):
-        # features = self.finger_mask(features)
+        batch, frames, nodes, coords = features.shape
+        features = self.finger_mask(features).reshape(batch * 6, frames, nodes, coords)
+        variant_mask = video_mask.repeat_interleave(6, dim=0)
 
         for block in self.gcn_block:
-            features = block(features, video_mask)
+            features = block(features, variant_mask)
 
         features = features.mean(dim=-2)
-        return features
+        return features.reshape(batch, 6, frames, -1)
 
-    def encode_transformer(self, features, video_mask, x_rgb=None):
+    def encode_transformer(self, features, video_mask, x_rgb=None, gcn_original=None):
         video_mask = video_mask.to(device=features.device, dtype=torch.bool, )
 
         features = features.masked_fill(~video_mask.unsqueeze(-1), 0)
@@ -298,7 +302,13 @@ class ISLR_Transformer_VCN(nn.Module):
         # x = x_shape + x_average + x_position
 
         # Giữ nhánh GCN hiện tại, đầu vào là shape feature.
-        x_gcn = self.encode_gcn(position_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
+        if gcn_original is None:
+            gcn_original = self.encode_gcn(
+                position_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask,
+            )[:, 0]
+        # x_gcn = self.gcn_output_projection(gcn_original)
+        x_gcn = gcn_original
+
         x = x_shape + x_average + x_position + x_gcn
         # x = x_average                                     # best=73.00% loss=1.2133 75.00%
         # x = x_average + x_gcn                             # best=66.00% loss=1.4254 95.00%
@@ -323,23 +333,28 @@ class ISLR_Transformer_VCN(nn.Module):
 
     def forward(self, features, labels=None, video_mask=None, x_rgb=None):
 
-        video_mask = video_mask.to(device=features.device, dtype=torch.bool)
+        if video_mask is None:
+            video_mask = torch.ones(features.shape[:2], device=features.device, dtype=torch.bool)
+        else:
+            video_mask = video_mask.to(device=features.device, dtype=torch.bool)
         features = features.masked_fill(~video_mask.unsqueeze(-1), 0)
         B, T, D = features.shape
 
         shape_feature, average_feature, position_feature = features.split(self.feature_dim, dim=-1)
 
-        t = self.encode_transformer(features, video_mask, x_rgb=x_rgb)
-        # x_gcn = self.encode_gcn(
-        #     shape_feature.reshape(B, T, -1, _COORD_DIM),
-        #     video_mask,
-        # )
-        # x_gcn = masked_mean_pool(x_gcn, video_mask)
+        variants = self.encode_gcn(
+            position_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask,
+        )
 
-
+        h = masked_mean_pool(
+            variants.reshape(B * 6, T, -1), video_mask.repeat_interleave(6, dim=0),
+        ).reshape(B, 6, -1)
+        deltas = h[:, :1] - h[:, 1:]
+        t = self.encode_transformer(
+            features, video_mask, x_rgb=x_rgb, gcn_original=variants[:, 0],
+        )
         t = masked_mean_pool(t, video_mask)
-        # t = t + x_gcn
-        # t = torch.cat([t, x_gcn], dim=-1)
+        t = torch.cat([t, h[:, 0], deltas.flatten(1)], dim=-1)
         logits = self.classifier(t)
 
         loss = None
@@ -349,5 +364,9 @@ class ISLR_Transformer_VCN(nn.Module):
         return ModelOutput(logits=logits,
                            loss=loss,
                             encoded=t,
+                            finger_embeddings=h,
+                            finger_deltas=deltas,
                            )
 
+class ISLR_Transformer_VCN(_BestVCN):
+    """Use the saved best VCN architecture, dependencies and default parameters."""

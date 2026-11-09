@@ -1,7 +1,7 @@
 import os
 import sys
 
-from models.best_performance import ISLR_Transformer_GCN_BEST
+from models import ISLR_Transformer_FCN
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 from functools import partial
@@ -22,7 +22,7 @@ DATA_PATH = os.path.join(ROOT, "datasets", "processed", "wlasl_features_0_6")
 LABEL_DIR = os.path.join(ROOT, "datasets", "annotations", "WLASL100")
 # CONFIG_PATH = os.path.join(LABEL_DIR, "gloss.txt")
 OUTPUT_DIR = os.path.join(ROOT, "outputs", "models")
-MODEL_NAME = "landmarks_100_v1.pt"
+MODEL_NAME = "landmarks_100_finger_delta.pt"
 LR = 1e-4
 
 BATCH_SIZE = 8
@@ -73,8 +73,8 @@ def main(args):
         args.data_path, args.label_path,
         mode=args.val_mode, include_velocity=args.model == "transformer"
     )
-    train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor(), num_augmentations=2)
-    # train_dataset = base_train
+    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor(), num_augmentations=1)
+    train_dataset = base_train
 
     val_dataset = base_val
     batch_collate = partial(collate_landmarks, use_all_features=args.model in ("transformer", "transformer_gcn"))

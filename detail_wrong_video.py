@@ -31,7 +31,7 @@ from tqdm import tqdm
 from config import DEVICE, ROOT, WLASL_RAW_DATA, _COORD_DIM, _NUM_NODE
 from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.data.video_filter import excluded_video_ids
-from src.models import ISLR_GCN, ISLR_Transformer, ISLR_Transformer_GCN
+from src.models import ISLR_GCN, ISLR_Transformer, ISLR_Transformer_VCN
 from src.training.train import collate_fn
 
 HAND_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7),
@@ -44,13 +44,14 @@ POSE_EDGES = [(11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", default=str(Path(ROOT) / "outputs/models/landmarks_100_v1.pt"))
-    parser.add_argument("--data_path", default=str(Path(ROOT) / "datasets/processed/wlasl_features_v2"))
+    parser.add_argument("--checkpoint", default=str(Path(ROOT) / "outputs/models/landmarks_100_finger_delta.pt"))
+    parser.add_argument("--data_path", default=str(Path(ROOT) / "datasets/processed/wlasl_features_0_6"))
     parser.add_argument("--label_path", default=str(Path(ROOT) / "datasets/annotations/WLASL100"))
     parser.add_argument("--video_dir", default=WLASL_RAW_DATA)
     parser.add_argument("--output", default=str(PROJECT / "outputs/detail_wrong_video_by_gloss"),
                         help="Export directory; deleted and recreated on every run")
-    parser.add_argument("--model", choices=("auto", "gcn", "transformer", "transformer_gcn"), default="auto")
+    parser.add_argument("--model", choices=("auto", "gcn", "transformer", "transformer_gcn", "transformer_vcn"), default="auto",
+                        help="transformer_gcn and transformer_vcn both use ISLR_Transformer_VCN, matching main.py")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--device", default=str(DEVICE))
     parser.add_argument("--report_only", action="store_true", help="Evaluate without exporting videos")
@@ -81,7 +82,16 @@ def load_model(checkpoint_path, architecture, num_classes, device):
     if kwargs.get("num_nodes", _NUM_NODE) != _NUM_NODE:
         raise ValueError("Expected a landmark checkpoint from main.py, not a contour/mesh checkpoint")
     cls = {"gcn": ISLR_GCN, "transformer": ISLR_Transformer,
-           "transformer_gcn": ISLR_Transformer_GCN}[architecture]
+           "transformer_gcn": ISLR_Transformer_VCN,
+           "transformer_vcn": ISLR_Transformer_VCN}[architecture]
+    if cls is ISLR_Transformer_VCN:
+        # main.py checkpoints may omit channels and rely on defaults that later change.
+        channel_weights = sorted(
+            (int(match.group(1)), weight)
+            for key, weight in state.items()
+            if (match := re.fullmatch(r"gcn_block\.(\d+)\.gcn\.phi\.weight", key))
+        )
+        kwargs.setdefault("gcn_channels", tuple(weight.shape[0] for _, weight in channel_weights))
     model = cls(**kwargs)
     model.load_state_dict(state, strict=True)
     return model.to(device).eval(), architecture, kwargs
@@ -89,7 +99,7 @@ def load_model(checkpoint_path, architecture, num_classes, device):
 
 def collate_for_model(batch, architecture, single_feature=False):
     features, labels, mask, video_ids = collate_fn(batch)
-    if architecture != "transformer_gcn" or single_feature:
+    if architecture not in ("transformer_gcn", "transformer_vcn") or single_feature:
         dim = _NUM_NODE * _COORD_DIM
         features = features[..., dim:2 * dim]
     return features, labels, mask, video_ids

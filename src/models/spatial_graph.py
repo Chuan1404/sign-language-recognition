@@ -15,7 +15,8 @@ _HAND_BONES = [(0, 1), (0, 5), (0, 9), (0, 13), (0, 17),
                (9, 10), (10, 11), (11, 12),
                (13, 14), (14, 15), (15, 16),
                (17, 18), (18, 19), (19, 20),
-               (5, 9), (9, 13), (13, 17)]
+               (5, 9), (9, 13), (13, 17)
+               ]
 
 _POSE_BONES = [  # face
     (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8), (9, 10),  # torso / arms
@@ -56,6 +57,7 @@ def build_adjacency_from_edges(edges, num_nodes):
     for i, j in edges:
         A[i, j] = 1.0
         A[j, i] = 1.0
+
     return A
 
 
@@ -256,15 +258,11 @@ class RandomFingerMask(nn.Module):
 
     def __init__(self, num_nodes):
         super().__init__()
-        if _N_HAND != 21 or num_nodes < 2 * _N_HAND:
-            raise ValueError("Finger masking requires two 21-joint MediaPipe hands")
         self.num_nodes = num_nodes
 
     def forward(self, features):
         if not self.training:
             return features
-        if features.ndim != 4 or features.shape[2] != self.num_nodes:
-            raise ValueError("Expected features with shape (B, T, num_nodes, C)")
         batch = features.shape[0]
         # Layout: retained pose joints, left hand, right hand. Wrist index is 0.
         hand_offsets = torch.tensor(
@@ -279,10 +277,28 @@ class RandomFingerMask(nn.Module):
         return features.masked_fill(~keep[:, None, :, None], 0)
 
 
-class V_GCN(nn.Module):
-    """Independent graph convolution with input-dependent joint attention."""
+class FingerMaskVariants(nn.Module):
+    """Original + thumb/index/middle/ring/pinky pair masks, in train and eval."""
 
-    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=4):
+    def __init__(self, num_nodes):
+        super().__init__()
+
+        keep = torch.ones(6, num_nodes, dtype=torch.bool)
+        for finger in range(5):
+            for offset in (num_nodes - 2 * _N_HAND, num_nodes - _N_HAND):
+                start = offset + 1 + 4 * finger
+                keep[finger + 1, start:start + 4] = False
+
+        self.register_buffer("keep", keep, persistent=False)
+
+    def forward(self, features):
+        return features[:, None].masked_fill(~self.keep[None, :, None, :, None], 0)
+
+
+class V_GCN(nn.Module):
+    """Graph convolution using learned adjacency shared across videos and frames."""
+
+    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=1):
         super().__init__()
 
         self.V = num_nodes
@@ -292,6 +308,9 @@ class V_GCN(nn.Module):
         base_adjacency = base_adjacency.float()
         self.register_buffer("I", torch.eye(self.V))
         self.A_in = nn.Parameter(base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)
+
+    def _raw_A(self):
+        return self.I.unsqueeze(0) + self.A_in
 
     def _normalized_A(self, A_raw):
         deg = A_raw.sum(-1).clamp(min=1e-6)

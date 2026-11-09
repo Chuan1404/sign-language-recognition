@@ -31,6 +31,18 @@ def _build_swap_index():
 _SWAP_IDX = _build_swap_index()
 
 
+def rotate_hand_blocks(blocks, rotation):
+    """Rotate hands about each wrist in (T, B, N, C); preserve pose and zeros."""
+    result = blocks.copy()
+    for start in (_N_POSE, _N_POSE + _N_HAND):
+        hand = blocks[:, :, start:start + _N_HAND, :]
+        wrist = hand[:, :, :1, :]
+        present = np.any(hand != 0, axis=-1, keepdims=True)
+        rotated = (hand - wrist) @ rotation.T + wrist
+        result[:, :, start:start + _N_HAND, :] = np.where(present, rotated, 0)
+    return result
+
+
 class SkeletonAugmentor:
     def __init__(
         self,
@@ -53,15 +65,6 @@ class SkeletonAugmentor:
         self.enable_viewpoint = enable_viewpoint
         self.shoulder_width_range = shoulder_width_range
         self.hand_shift_range = hand_shift_range
-        if not 0 < shoulder_width_range[0] <= shoulder_width_range[1] <= 1:
-            raise ValueError("shoulder_width_range must satisfy 0 < min <= max <= 1")
-        if not 0 <= hand_shift_range[0] <= hand_shift_range[1]:
-            raise ValueError("hand_shift_range must satisfy 0 <= min <= max")
-        kept = [i for i in range(33) if i not in set(_REMOVE_POSE_IDX)]
-        if len(kept) != _N_POSE or 11 not in kept or 12 not in kept:
-            raise ValueError("Viewpoint augmentation requires both shoulders in the kept pose nodes")
-        self.shoulder_indices = (kept.index(11), kept.index(12))
-        self.elbow_indices = tuple(kept.index(node) for node in (13, 14) if node in kept)
         self.rotation_deg = rotation_deg
         self.scale_range = scale_range
         self.noise_std = noise_std
@@ -71,17 +74,13 @@ class SkeletonAugmentor:
         self.speed_perturb_prob = speed_perturb_prob
         self.speed_range = speed_range
         self.enable_mirror = enable_mirror
-        if not 0 <= mirror_prob <= 1:
-            raise ValueError("mirror_prob must be between 0 and 1")
         self.mirror_prob = mirror_prob
         self.enable_noise = enable_noise
         self.rng = rng if rng is not None else np.random.default_rng()
 
     def __call__(self, fused, view_direction=None):
         fused = np.asarray(fused, dtype=np.float32)
-        if fused.ndim != 2 or fused.shape[1] not in (
-                NUM_JOINTS * _COORD_DIM, 3 * NUM_JOINTS * _COORD_DIM):
-            raise ValueError("Expected (T, N*C) or (T, 3*N*C)")
+
         T, flat_dim = fused.shape[0], fused.shape[1]
 
         flatten = NUM_JOINTS * _COORD_DIM  # 55 * 2 = 110
@@ -94,29 +93,29 @@ class SkeletonAugmentor:
         # blocks = self._rotate(blocks)
         # blocks = self._scale(blocks)
 
-        if self.enable_mirror and self.rng.random() < self.mirror_prob:
-            blocks, present_mask = self._mirror(blocks, present_mask)
+        # if self.enable_mirror and self.rng.random() < self.mirror_prob:
+        #     blocks, present_mask = self._mirror(blocks, present_mask)
 
-        # if self.rng.random() < self.speed_perturb_prob:
-        #     blocks, present_mask = self._speed_perturb(blocks, present_mask)
-        #     T = blocks.shape[0]
+        if self.rng.random() < self.speed_perturb_prob:
+            blocks, present_mask = self._speed_perturb(blocks, present_mask)
+            T = blocks.shape[0]
 
         # ── Gaussian noise ──
-        if (
-            self.enable_noise
-            and self.noise_std > 0
-            and self.rng.random() < self.noise_prob
-        ):
-            blocks = self._add_noise(blocks, present_mask)
+        # if (
+        #     self.enable_noise
+        #     and self.noise_std > 0
+        #     and self.rng.random() < self.noise_prob
+        # ):
+        #     blocks = self._add_noise(blocks, present_mask)
 
-        if self.enable_viewpoint:
-            blocks = self._simulate_viewpoint(blocks, present_mask, view_direction)
+        # if self.enable_viewpoint:
+        #     blocks = self._simulate_viewpoint(blocks, present_mask, view_direction)
 
         blocks = blocks * present_mask[:, None, :, None]  # broadcast: (T,1,N,1)
         coords = blocks.reshape(T, flat_dim)
 
-        if self.rng.random() < self.frame_dropout_prob:
-            coords = self._drop_frames(coords)
+        # if self.rng.random() < self.frame_dropout_prob:
+        #     coords = self._drop_frames(coords)
 
         return coords.astype(np.float32)
 
@@ -178,7 +177,7 @@ class SkeletonAugmentor:
             R = np.array([[cos, -sin, 0], [sin, cos, 0], [0, 0, 1]], dtype=np.float32)
         else:
             raise ValueError(f"Unsupported _COORD_DIM: {_COORD_DIM}")
-        return coords @ R.T
+        return rotate_hand_blocks(coords, R)
 
     def _speed_perturb(self, blocks, present_mask):
         T = blocks.shape[0]

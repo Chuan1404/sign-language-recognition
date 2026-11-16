@@ -1,33 +1,25 @@
 import math
 import os
 
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
 import torch
 from torch import nn
+from config import _N_HAND, _REMOVE_POSE_IDX, _NUM_NODE, _COORD_DIM, _N_POSE
 
-from config import _N_HAND, _REMOVE_POSE_IDX, _NUM_NODE, _COORD_DIM
+_HAND_BONES = [(0, 1), (0, 5), (0, 9), (0, 13), (0, 17), (1, 2), (2, 3), (3, 4), (5, 6), (6, 7), (7, 8), (9, 10),
+               (10, 11), (11, 12), (13, 14), (14, 15), (15, 16), (17, 18), (18, 19), (19, 20),
+               (5, 9), (9, 13), (13, 17)]
 
-_HAND_BONES = [(0, 1), (0, 5), (0, 9), (0, 13), (0, 17),
-               (1, 2), (2, 3), (3, 4),
-               (5, 6), (6, 7), (7, 8),
-               (9, 10), (10, 11), (11, 12),
-               (13, 14), (14, 15), (15, 16),
-               (17, 18), (18, 19), (19, 20),
-               (5, 9), (9, 13), (13, 17)
-               ]
-
-_POSE_BONES = [  # face
-    (0, 1), (1, 2), (2, 3), (3, 7), (0, 4), (4, 5), (5, 6), (6, 8), (9, 10),  # torso / arms
-    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16), (11, 23), (12, 24), (23, 24),  # hands (pose-model fingers)
-    (15, 17), (15, 19), (15, 21), (17, 19), (16, 18), (16, 20), (16, 22), (18, 20), ]
+_POSE_BONES = [
+    # (0, 9), (0, 10), (9, 10),  # Nose and mouth corners
+    # (0, 11), (0, 12),
+    (11, 12), (11, 13), (12, 14),
+]
 
 CUSTOM_EDGES = []
 
 remove_set = set(_REMOVE_POSE_IDX)
 
-remaining_nodes = [n for n in range(32) if n not in remove_set]
+remaining_nodes = [n for n in range(33) if n not in remove_set]
 old_to_new = {old: new for new, old in enumerate(remaining_nodes)}
 n_pose_kept = len(remaining_nodes)
 
@@ -44,11 +36,17 @@ _RIGHT_WRIST = _LEFT_WRIST + _N_HAND
 _LEFT_HAND_EDGES = [(_LEFT_WRIST + i, _LEFT_WRIST + j) for i, j in _HAND_BONES]
 _RIGHT_HAND_EDGES = [(_RIGHT_WRIST + i, _RIGHT_WRIST + j) for i, j in _HAND_BONES]
 
-FULL_BODY_EDGES = POSE_EDGES + _LEFT_HAND_EDGES + _RIGHT_HAND_EDGES
 HAND_EDGES = _LEFT_HAND_EDGES + _RIGHT_HAND_EDGES
-# FULL_BODY_EDGES = POSE_EDGES
 
-# assert all(0 <= a < _NUM_NODE and 0 <= b < _NUM_NODE for a, b in HAND_EDGES)
+_ELBOW_WRIST_EDGES = [
+    (old_to_new[elbow], n_pose_kept + wrist)
+    for elbow, wrist in ((13, _LEFT_WRIST), (14, _RIGHT_WRIST))
+    if elbow in old_to_new
+]
+LOCAL_BODY_EDGES = POSE_EDGES + [(n_pose_kept + i, n_pose_kept + j) for i, j in HAND_EDGES]
+FULL_BODY_EDGES = LOCAL_BODY_EDGES
+
+assert all(0 <= a < _NUM_NODE and 0 <= b < _NUM_NODE for a, b in FULL_BODY_EDGES)
 assert len({tuple(sorted(e)) for e in HAND_EDGES}) == len(HAND_EDGES), ("duplicate edges")
 
 
@@ -59,6 +57,31 @@ def build_adjacency_from_edges(edges, num_nodes):
         A[j, i] = 1.0
 
     return A
+
+
+def build_global_graph():
+    from .vsnet_backbone.graph import EDGES
+
+    if _N_HAND != 21:
+        raise ValueError("VSNet grouping needs two 21-point hands")
+
+    left = n_pose_kept
+    right = left + _N_HAND
+    paired_pose = [(a, b) for a, b in ((11, 12), (13, 14)) if a in old_to_new and b in old_to_new]
+    groups = (
+        (*[old_to_new[a] for a, _ in paired_pose], left, left + 2, left + 3, left + 4),
+        (*[old_to_new[b] for _, b in paired_pose], right, right + 2, right + 3, right + 4),
+        tuple(range(left + 5, left + 13)),
+        tuple(range(left + 13, left + 21)),
+        tuple(range(right + 5, right + 13)),
+        tuple(range(right + 13, right + 21)),
+    )
+    adjacency = build_adjacency_from_edges(EDGES["wlasl_44"], 44)
+    # Slots 0/6 are shoulders and 1/7 are elbows in the original 44-node ordering.
+    excluded = {slot + offset for slot, pair in enumerate(((11, 12), (13, 14)))
+                if pair not in paired_pose for offset in (0, 6)}
+    kept = [slot for slot in range(44) if slot not in excluded]
+    return groups, adjacency[kept][:, kept]
 
 
 def build_direction_adjacency_from_edges(edges, num_nodes):
@@ -95,47 +118,8 @@ class TemporalConv(nn.Module):
         self.drop = nn.Dropout(dropout)
 
     def forward(self, x):
-        # x: (B, T, N, C) → (B, C, T, N)
-        x = x.permute(0, 3, 1, 2)
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.drop(x)
-        x = x.permute(0, 2, 3, 1)  # (B, T, N, C)
-        return x
-
-
-class MultiScaleTemporalConv(nn.Module):
-    def __init__(self, channels, dropout=0.1):
-        super().__init__()
-
-        self.conv3 = nn.Conv2d(channels, channels, kernel_size=(3, 1), padding=(1, 0), bias=False)
-
-        self.conv9 = nn.Conv2d(channels, channels, kernel_size=(9, 1), padding=(4, 0), bias=False)
-
-        self.conv15 = nn.Conv2d(channels, channels, kernel_size=(15, 1), padding=(7, 0), bias=False)
-
-        self.bn = nn.BatchNorm2d(channels * 3)
-
-        self.fusion = nn.Conv2d(channels * 3, channels, kernel_size=1, bias=False)
-
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x):
-        # B, T, N, C
-        x = x.permute(0, 3, 1, 2)
-        # B, C, T, N
-
-        x3 = self.conv3(x)
-        x9 = self.conv9(x)
-        x15 = self.conv15(x)
-
-        x = torch.cat([x3, x9, x15], dim=1)
-
-        x = self.bn(x)
-        x = self.fusion(x)
-        x = self.drop(x)
-
-        return x.permute(0, 2, 3, 1)
+        x = self.conv(x.permute(0, 3, 1, 2))
+        return self.drop(self.bn(x)).permute(0, 2, 3, 1)
 
 
 class GCNBlock(nn.Module):
@@ -187,118 +171,36 @@ class GCNBlock(nn.Module):
         # x = x + res
 
         # if m is not None:
-            # x = x * m
+        # x = x * m
         return x
 
 
-class DecoupledGCN(nn.Module):
-    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=4):
+class Node_Attention(nn.Module):
+
+    def __init__(self, channels):
         super().__init__()
+        self.query = nn.Linear(channels, channels, bias=False)
+        self.key = nn.Linear(channels, channels, bias=False)
+        self.value = nn.Linear(channels, channels, bias=False)
+        self.scale = channels ** -0.5
 
-        self.V = num_nodes
-        self.p = decouple_p
-        self.phi = nn.Linear(in_channels, out_channels)
-
-        base_adjacency = base_adjacency.float()
-        self.register_buffer("I", torch.eye(self.V))  # (1, N, N)
-
-        self.A_in = nn.Parameter(base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
-
-        # self.A_out = nn.Parameter(base_adjacency.t().unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)  # (p, N, N)
-
-    def _raw_A(self):
-        return self.I.unsqueeze(0) + self.A_in
-
-    def _normalized_A(self, A_raw):
-        deg = A_raw.sum(-1).clamp(min=1e-6)  # (p, V)
-        d_inv_sqrt = deg.pow(-0.5)
-        D_inv_sqrt = torch.diag_embed(d_inv_sqrt)  # (p, V, V)
-
-        return D_inv_sqrt @ A_raw @ D_inv_sqrt  # (p, V, V)
-
-    def forward(self, x):
-        feat = self.phi(x)  # (B, T, V, C_out)
-        A_raw = self._raw_A()  # (p, V, V)
-        A_norm = self._normalized_A(A_raw)
-
-        out = 0
-        for k in range(self.p):
-            out = out + torch.einsum("vw,btwc->btvc", A_norm[k], feat)
-        out = out / self.p
-
-        return out, A_raw
-
-
-class SelfPacingDroppingBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency,
-                 decouple_p=4, drop=True, use_tcn=True,
-                 temporal_kernel_size=9, dropout=0.1):
-        super().__init__()
-
-        self.gcn = DecoupledGCN(in_ch, out_ch, num_nodes, base_adjacency, decouple_p)
-        self.use_tcn = use_tcn
-        self.tcn = TemporalConv(out_ch, kernel_size=temporal_kernel_size if use_tcn else 1,
-                                dropout=dropout)
-        self.act = nn.GELU()
-
-    def forward(self, x, mask=None):
-        valid = None if mask is None else mask.to(device=x.device, dtype=torch.bool)[:, :, None, None]
-        x = x.masked_fill(~valid, 0)
-        feat, _ = self.gcn(x)
-        feat = feat.masked_fill(~valid, 0)
-
-        if self.use_tcn:
-            feat = self.act(self.tcn(feat))
-        feat = feat.masked_fill(~valid, 0)
-        return feat
-
-
-class RandomFingerMask(nn.Module):
-    """Mask one finger per hand and sample, consistently across all frames."""
-
-    def __init__(self, num_nodes):
-        super().__init__()
-        self.num_nodes = num_nodes
-
-    def forward(self, features):
-        if not self.training:
-            return features
-        batch = features.shape[0]
-        # Layout: retained pose joints, left hand, right hand. Wrist index is 0.
-        hand_offsets = torch.tensor(
-            [self.num_nodes - 2 * _N_HAND, self.num_nodes - _N_HAND],
-            device=features.device,
-        )
-        fingers = torch.randint(5, (batch, 2), device=features.device)
-        joints = (hand_offsets[None, :, None] + 1 + 4 * fingers[:, :, None]
-                  + torch.arange(4, device=features.device))
-        keep = torch.ones(batch, self.num_nodes, dtype=torch.bool, device=features.device)
-        keep.scatter_(1, joints.reshape(batch, 8), False)
-        return features.masked_fill(~keep[:, None, :, None], 0)
-
-
-class FingerMaskVariants(nn.Module):
-    """Original + thumb/index/middle/ring/pinky pair masks, in train and eval."""
-
-    def __init__(self, num_nodes):
-        super().__init__()
-
-        keep = torch.ones(6, num_nodes, dtype=torch.bool)
-        for finger in range(5):
-            for offset in (num_nodes - 2 * _N_HAND, num_nodes - _N_HAND):
-                start = offset + 1 + 4 * finger
-                keep[finger + 1, start:start + 4] = False
-
-        self.register_buffer("keep", keep, persistent=False)
-
-    def forward(self, features):
-        return features[:, None].masked_fill(~self.keep[None, :, None, :, None], 0)
-
+    def forward(self, features, video_mask=None, return_attention=False):
+        if video_mask is not None:
+            video_mask = video_mask.to(device=features.device, dtype=torch.bool)
+            features = features.masked_fill(~video_mask[:, :, None, None], 0)
+        q, k, v = self.query(features), self.key(features), self.value(features)
+        weights = (q @ k.transpose(-2, -1) * self.scale).softmax(dim=-1)
+        pooled = (weights @ v).mean(dim=-2)
+        if video_mask is not None:
+            pooled = pooled.masked_fill(~video_mask[:, :, None], 0)
+            weights = weights.masked_fill(~video_mask[:, :, None, None], 0)
+        if return_attention:
+            return pooled, weights
+        return pooled
 
 class V_GCN(nn.Module):
-    """Graph convolution using learned adjacency shared across videos and frames."""
 
-    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=1):
+    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=1, learnable_adjacency=False):
         super().__init__()
 
         self.V = num_nodes
@@ -307,7 +209,155 @@ class V_GCN(nn.Module):
 
         base_adjacency = base_adjacency.float()
         self.register_buffer("I", torch.eye(self.V))
-        self.A_in = nn.Parameter(base_adjacency.unsqueeze(0).repeat(self.p, 1, 1) * 1e-3)
+
+        adjacency = base_adjacency.unsqueeze(0).repeat(self.p, 1, 1).clone()
+        self.register_buffer("A_in", adjacency)
+
+        # if learnable_adjacency:
+        #     self.A_in = nn.Parameter(adjacency * 1e-3)
+        # else:
+        #     self.register_buffer("A_in", adjacency)
+
+    def _normalized_A(self, A_raw):
+        deg = A_raw.sum(-1).clamp(min=1e-6)
+        d_inv_sqrt = deg.pow(-0.5)
+        D_inv_sqrt = torch.diag_embed(d_inv_sqrt)
+
+        return D_inv_sqrt @ A_raw @ D_inv_sqrt
+
+    def forward(self, feature):
+        feat = self.phi(feature)
+
+        A_raw = self.I.unsqueeze(0) + self.A_in
+        A_norm = self._normalized_A(A_raw)
+
+        out = torch.einsum("pvw,btwc->btpvc", A_norm, feat)  # (B, T, P, V, C)
+        out = out.mean(dim=2)
+        return out, A_raw
+
+class V_GCN_Block(nn.Module):
+
+    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, decouple_p=4, drop=True, use_tcn=False,
+                 temporal_kernel_size=9, dropout=0.1, residual=False):
+
+        super().__init__()
+        self.gcn = V_GCN(in_ch, out_ch, num_nodes, base_adjacency, decouple_p)
+
+        self.use_tcn = use_tcn
+        self.tcn = TemporalConv(out_ch, kernel_size=temporal_kernel_size if use_tcn else 1, dropout=dropout)
+        self.act = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+
+        self.residual = (
+            nn.Identity() if in_ch == out_ch else nn.Linear(in_ch, out_ch, bias=False)) if residual else None
+
+    def forward(self, feature, mask=None):
+        valid = mask.to(device=feature.device, dtype=torch.bool)
+        valid = valid[:, :, None, None]
+
+        feature = feature.masked_fill(~valid, 0)
+
+        feat, _ = self.gcn(feature)
+        feat = feat.masked_fill(~valid, 0)
+
+        if self.use_tcn:
+            feat = self.act(self.tcn(feat))
+
+        else:
+            feat = self.act(feat)
+
+        feat = self.dropout(feat)
+
+        if self.residual is not None:
+            feat = feat + self.residual(feature)
+
+        return feat.masked_fill(~valid, 0)
+
+class V_GCN_Block_V2(nn.Module):
+
+    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency, decouple_p=4, drop=True, use_tcn=False,
+                 temporal_kernel_size=9, dropout=0.1, residual=False):
+
+        super().__init__()
+        self.gcn = V_GCN_V2(in_ch, out_ch, num_nodes, base_adjacency, decouple_p)
+
+        self.use_tcn = use_tcn
+        self.tcn = TemporalConv(out_ch, kernel_size=temporal_kernel_size if use_tcn else 1, dropout=dropout)
+        self.act = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+
+        self.residual = (
+            nn.Identity() if in_ch == out_ch else nn.Linear(in_ch, out_ch, bias=False)) if residual else None
+
+    def forward(self, feature, mask=None):
+        valid = mask.to(device=feature.device, dtype=torch.bool)
+        valid = valid[:, :, None, None]
+
+        feature = feature.masked_fill(~valid, 0)
+
+        feat, _ = self.gcn(feature)
+        feat = feat.masked_fill(~valid, 0)
+
+        if self.use_tcn:
+            feat = self.act(self.tcn(feat))
+
+        else:
+            feat = self.act(feat)
+
+        feat = self.dropout(feat)
+
+        if self.residual is not None:
+            feat = feat + self.residual(feature)
+
+        return feat.masked_fill(~valid, 0)
+
+class V_GCN_V2(nn.Module):
+
+    def __init__(self, in_channels, out_channels, num_nodes, base_adjacency, decouple_p=1, learnable_adjacency=False,
+                 mirror_input_x=False, dropout = 0.1):
+        super().__init__()
+
+        self.V = num_nodes
+        self.p = decouple_p
+
+        self.learnable_adjacency = learnable_adjacency
+        self.mirror_input_x = mirror_input_x
+        self.phi = nn.Sequential(nn.Linear(in_channels, out_channels), nn.GELU(), nn.Dropout(dropout), nn.LayerNorm(out_channels), )
+
+        base_adjacency = base_adjacency.float()
+        self.register_buffer("I", torch.eye(self.V))
+        adjacency = base_adjacency.unsqueeze(0).repeat(self.p, 1, 1).clone()
+
+        if learnable_adjacency:
+            self.A_in = nn.Parameter(adjacency * 1e-3)
+        else:
+            self.register_buffer("A_in", adjacency)
+
+        # Keep full-layout indices so both branches return (B, T, V, C).
+        mirror = torch.zeros_like(base_adjacency)
+        if self.V == _NUM_NODE:
+            # groups, _ = build_global_graph()
+            # # Each source contributes equally within the partner's one-hop neighborhood.
+            # neighborhood = base_adjacency.ne(0).to(base_adjacency.dtype)
+            # neighborhood.fill_diagonal_(1)
+            # neighborhood = neighborhood / neighborhood.sum(dim=1, keepdim=True)
+            # for left, right in ((0, 1), (2, 4), (3, 5)):
+            #     a, b = list(groups[left]), list(groups[right])
+            #     mirror[a] = neighborhood[b]
+            #     mirror[b] = neighborhood[a]
+            pairs = _remap([(13, 14)])
+            pairs.extend((n_pose_kept + i, n_pose_kept + _N_HAND + i) for i in range(_N_HAND))
+            for left, right in pairs:
+                mirror[left, right] = mirror[right, left] = 1.0
+
+        elif self.V == 2 * _N_HAND:
+            left = torch.arange(_N_HAND, device=mirror.device)
+            right = left + _N_HAND
+            mirror[left, right] = 1.0
+            mirror[right, left] = 1.0
+
+        self.register_buffer("mirror_A", mirror, persistent=False)
+        self.register_buffer("has_partner", mirror.any(dim=1)[:, None], persistent=False)
 
     def _raw_A(self):
         return self.I.unsqueeze(0) + self.A_in
@@ -322,351 +372,19 @@ class V_GCN(nn.Module):
     def forward(self, feature):
         feat = self.phi(feature)
 
-        scores = torch.matmul(feat, feat.transpose(-1, -2)) * feat.size(-1) ** -0.5
-        A_shape = (scores.unsqueeze(2) + self.A_in).softmax(dim=-1)
-        A_raw = self.I + A_shape
+        if not self.learnable_adjacency:
+            # base_adjacency already contains self-loops. No learned edges or QK scores.
+            A_raw = self.A_in
+            A_norm = self._normalized_A(A_raw)
+            local = torch.einsum("pvw,btwc->btpvc", A_norm, feat).mean(dim=2)
+        else:
+            A_raw = self.I + self.A_in
+            A_norm = self._normalized_A(A_raw)
+            local = torch.einsum("pvw,btwc->btpvc", A_norm, feat)  # (B, T, P, V, C)
+            local = local.mean(dim=2)
 
-        # A_raw = self.I.unsqueeze(0) + self.A_in
-        A_norm = self._normalized_A(A_raw)
-        out = torch.einsum("btpvw,btwc->btpvc", A_norm, feat).mean(dim=2)
+        mirror_feat = feat
+
+        opposite = torch.einsum("vw,btwc->btvc", self.mirror_A, mirror_feat)
+        out = torch.where(self.has_partner, (local + opposite) * 0.5, local)
         return out, A_raw
-
-
-class V_GCN_Block(nn.Module):
-    """Shape-only counterpart of SelfPacingDroppingBlock."""
-
-    def __init__(self, in_ch, out_ch, num_nodes, base_adjacency,
-                 decouple_p=4, drop=True, use_tcn=True,
-                 temporal_kernel_size=9, dropout=0.1):
-        super().__init__()
-        self.gcn = V_GCN(in_ch, out_ch, num_nodes, base_adjacency,
-                         decouple_p)
-        self.use_tcn = use_tcn
-        self.tcn = TemporalConv(out_ch, kernel_size=temporal_kernel_size if use_tcn else 1,
-                                dropout=dropout)
-        self.act = nn.GELU()
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, shape_feature, mask=None):
-        valid = (torch.ones(shape_feature.shape[:2], device=shape_feature.device, dtype=torch.bool)
-                 if mask is None else mask.to(device=shape_feature.device, dtype=torch.bool))
-        valid = valid[:, :, None, None]
-
-        shape_feature = shape_feature.masked_fill(~valid, 0)
-
-        feat, _ = self.gcn(shape_feature)
-        feat = feat.masked_fill(~valid, 0)
-
-        if self.use_tcn:
-            feat = self.act(self.tcn(feat))
-
-        if not self.use_tcn:
-            feat = self.act(feat)
-
-        return self.dropout(feat).masked_fill(~valid, 0)
-
-
-class SPDStack(nn.Module):
-    """Stack of decoupled GCN blocks, optionally with temporal convolution.
-
-    Group/drop arguments are retained for compatibility; no node dropping is implemented.
-    channels includes the input channel count.
-    """
-    def __init__(self, channels, num_nodes, base_adjacency, groups=None,
-                 num_drop_per_group=1, decouple_p=4, use_tcn=True,
-                 temporal_kernel_size=9, dropout=0.1):
-        super().__init__()
-        if len(channels) < 2 or any(c <= 0 for c in channels) or decouple_p <= 0:
-            raise ValueError("Need positive input/output channels and decouple_p")
-        self.blocks = nn.ModuleList([
-            SelfPacingDroppingBlock(
-                channels[i], channels[i + 1], num_nodes, base_adjacency,
-                decouple_p=decouple_p, use_tcn=use_tcn,
-                temporal_kernel_size=temporal_kernel_size, dropout=dropout,
-            ) for i in range(len(channels) - 1)
-        ])
-
-    def forward(self, x, mask=None):
-        for block in self.blocks:
-            x = block(x, mask)
-        return x
-
-
-class _GCNTemporalEncoderLayer(nn.Module):
-
-    def __init__(self, hidden_dim, num_nodes, adjacency, nhead, dim_feedforward, dropout):
-        super().__init__()
-        self.nhead = nhead
-        self.head_dim = num_nodes * hidden_dim // nhead
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
-        self.gcn_q = GCNBlock(hidden_dim, hidden_dim, num_nodes, adjacency, dropout=dropout)
-        self.gcn_k = GCNBlock(hidden_dim, hidden_dim, num_nodes, adjacency, dropout=dropout)
-        self.gcn_v = GCNBlock(hidden_dim, hidden_dim, num_nodes, adjacency, dropout=dropout)
-        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.attention_drop = nn.Dropout(dropout)
-        self.residual_drop = nn.Dropout(dropout)
-        self.ffn = nn.Sequential(nn.Linear(hidden_dim, dim_feedforward), nn.GELU(), nn.Dropout(dropout),
-                                 nn.Linear(dim_feedforward, hidden_dim), )
-
-    def forward(self, x, video_mask):
-        batch, frames, nodes, channels = x.shape
-        valid = video_mask[:, :, None, None]
-        normalized = self.norm1(x).masked_fill(~valid, 0)
-
-        def project(block):
-            # Flatten only after GCN: each frame remains one attention token.
-            projected = block(normalized, video_mask)
-            return projected.reshape(batch, frames, self.nhead, self.head_dim).transpose(1, 2)
-
-        q, k, v = project(self.gcn_q), project(self.gcn_k), project(self.gcn_v)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
-        key_mask = video_mask[:, None, None, :]
-        scores = scores.masked_fill(~key_mask, torch.finfo(scores.dtype).min)
-        # Explicit zeroing also handles samples with no valid frames.
-        attention = scores.softmax(dim=-1).masked_fill(~key_mask, 0)
-        attended = torch.matmul(self.attention_drop(attention), v)
-        attended = attended.transpose(1, 2).contiguous().reshape(batch, frames, nodes, channels)
-        x = (x + self.residual_drop(self.out_proj(attended))).masked_fill(~valid, 0)
-        x = (x + self.residual_drop(self.ffn(self.norm2(x)))).masked_fill(~valid, 0)
-        return x
-
-class TransformerBlock(nn.Module):
-    def __init__(
-        self,
-        hidden_dim=128,
-        n_head=8,
-        dim_feedforward=1024,
-        dropout=0.1,
-        channels=(64, 64, 128, 128),
-        num_nodes=_NUM_NODE,
-        base_adjacency=None,
-    ):
-        super().__init__()
-
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
-
-        self.attention = GCN_MultiHeadAttention(
-            input_dim=hidden_dim,
-            hidden_dim=hidden_dim,
-            n_head=n_head,
-            dropout=dropout,
-            channels=channels,
-            num_nodes=num_nodes,
-            base_adjacency=base_adjacency,
-        )
-
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim, dim_feedforward),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, hidden_dim),
-        )
-
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-
-    def forward(self, x, video_mask=None):
-        # x: (B, T, N, hidden_dim)
-        if video_mask is None:
-            video_mask = torch.ones(
-                x.shape[:2], dtype=torch.bool, device=x.device
-            )
-        else:
-            video_mask = video_mask.to(
-                device=x.device, dtype=torch.bool
-            )
-            if tuple(video_mask.shape) != tuple(x.shape[:2]):
-                raise ValueError("video_mask phải có shape (B, T)")
-
-        valid = video_mask[:, :, None, None]
-        x = x.masked_fill(~valid, 0)
-
-        # Pre-norm attention.
-        context = self.attention(self.norm1(x), video_mask)
-        # context: (B, T, hidden_dim)
-        # Cộng ngữ cảnh frame vào từng khớp, giữ residual từng khớp.
-        x = x + self.dropout1(context).unsqueeze(2)
-        x = x.masked_fill(~valid, 0)
-
-        # FFN trên chiều đặc trưng của từng khớp.
-        x = x + self.dropout2(self.ffn(self.norm2(x)))
-        return x.masked_fill(~valid, 0)
-
-class GCN_Transformer(nn.Module):
-    def __init__(
-        self,
-        input_dim=_COORD_DIM,
-        hidden_dim=128,
-        num_encoder_layers=3,
-        n_head=8,
-        dim_feedforward=128 * 8,
-        dropout=0.1,
-        max_seq_len=500,
-        num_classes=1000,
-        channels=(64, 64, 128, 128),
-        base_adjacency=None,
-        num_nodes=_NUM_NODE,
-    ):
-        super().__init__()
-
-        if num_encoder_layers <= 0 or max_seq_len <= 0:
-            raise ValueError("Số layer và max_seq_len phải lớn hơn 0")
-
-        self.input_dim = input_dim
-        self.num_nodes = num_nodes
-        self.max_seq_len = max_seq_len
-
-        # Chỉ chiếu channel của mỗi khớp, không flatten các khớp.
-        self.input_projection = nn.Linear(input_dim, hidden_dim)
-        self.dropout = nn.Dropout(dropout)
-
-        position = torch.arange(
-            max_seq_len, dtype=torch.float32
-        ).unsqueeze(1)
-        frequency = torch.exp(
-            torch.arange(0, hidden_dim, 2, dtype=torch.float32)
-            * (-math.log(10000.0) / hidden_dim)
-        )
-
-        pe = torch.zeros(max_seq_len, hidden_dim)
-        pe[:, 0::2] = torch.sin(position * frequency)
-        pe[:, 1::2] = torch.cos(
-            position * frequency[:pe[:, 1::2].shape[1]]
-        )
-        self.register_buffer(
-            "position_encoding", pe[None, :, None, :]
-        )  # (1, max_seq_len, 1, hidden_dim)
-
-        self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(
-                hidden_dim=hidden_dim,
-                n_head=n_head,
-                dim_feedforward=dim_feedforward,
-                dropout=dropout,
-                channels=channels,
-                num_nodes=num_nodes,
-                base_adjacency=base_adjacency,
-            )
-            for _ in range(num_encoder_layers)
-        ])
-
-        self.final_norm = nn.LayerNorm(hidden_dim)
-        self.classifier = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes),
-        )
-
-    def forward(self, x, video_mask=None, labels=None):
-        # Hỗ trợ (B, T, N*C) và (B, T, N, C).
-        if x.ndim == 3:
-            if x.shape[-1] != self.num_nodes * self.input_dim:
-                raise ValueError("Sai chiều đặc trưng flatten")
-            x = x.reshape(
-                *x.shape[:2], self.num_nodes, self.input_dim
-            )
-
-        if x.ndim != 4 or tuple(x.shape[2:]) != (
-            self.num_nodes, self.input_dim
-        ):
-            raise ValueError("x phải có shape (B, T, num_nodes, input_dim)")
-
-        B, T = x.shape[:2]
-        if not 1 <= T <= self.max_seq_len:
-            raise ValueError("T phải nằm trong [1, max_seq_len]")
-
-        if video_mask is None:
-            video_mask = torch.ones(
-                B, T, dtype=torch.bool, device=x.device
-            )
-        else:
-            video_mask = video_mask.to(
-                device=x.device, dtype=torch.bool
-            )
-            if tuple(video_mask.shape) != (B, T):
-                raise ValueError("video_mask phải có shape (B, T)")
-
-        valid = video_mask[:, :, None, None]
-        x = x.masked_fill(~valid, 0)
-        x = self.input_projection(x)
-        x = self.dropout(
-            x + self.position_encoding[:, :T].to(dtype=x.dtype)
-        )
-        x = x.masked_fill(~valid, 0)
-
-        for block in self.transformer_blocks:
-            x = block(x, video_mask)
-
-        x = self.final_norm(x).masked_fill(~valid, 0)
-        x = x.mean(dim=2)  # (B, T, hidden_dim)
-
-        # Mean pooling chỉ trên các frame hợp lệ.
-        count = video_mask.sum(dim=1, keepdim=True).clamp(min=1)
-        pooled = x.sum(dim=1) / count.to(dtype=x.dtype)
-
-        logits = self.classifier(pooled)
-        loss = None
-        if labels is not None:
-            loss = nn.functional.cross_entropy(logits, labels)
-
-        return {"logits": logits, "loss": loss}
-
-class GCN_MultiHeadAttention(nn.Module):
-    def __init__(self, input_dim=128, hidden_dim=128, n_head=8, dropout=0.1,
-                 channels=(64, 64, 128, 128), num_nodes=_NUM_NODE,
-                 base_adjacency=None):
-        super().__init__()
-        if hidden_dim <= 0 or n_head <= 0 or hidden_dim % n_head:
-            raise ValueError("hidden_dim must be positive and divisible by n_head")
-        if not channels or channels[-1] != hidden_dim:
-            raise ValueError("channels[-1] must equal hidden_dim")
-        self.num_nodes = num_nodes
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.n_head = n_head
-        self.head_dim = hidden_dim // n_head
-        if base_adjacency is None:
-            base_adjacency = build_adjacency_from_edges(HAND_EDGES, num_nodes)
-        if tuple(base_adjacency.shape) != (num_nodes, num_nodes):
-            raise ValueError("Invalid adjacency shape")
-        dimensions = (input_dim, *channels)
-        def make_projection():
-            return nn.ModuleList([
-                GCNBlock(dimensions[i], dimensions[i + 1], num_nodes,
-                         base_adjacency, dropout=dropout)
-                for i in range(len(dimensions) - 1)
-            ])
-        self.W_query = make_projection()
-        self.W_key = make_projection()
-        self.W_value = make_projection()
-        self.dropout = nn.Dropout(dropout)
-        self.out_projection = nn.Linear(hidden_dim, hidden_dim)
-
-    def forward(self, x, video_mask=None):
-        B, T, N, C = x.shape
-        if N != self.num_nodes or C != self.input_dim or T == 0:
-            raise ValueError("Invalid attention input shape")
-        if video_mask is None:
-            video_mask = torch.ones(B, T, dtype=torch.bool, device=x.device)
-        else:
-            video_mask = video_mask.to(device=x.device, dtype=torch.bool)
-            if tuple(video_mask.shape) != (B, T):
-                raise ValueError("video_mask must have shape (B, T)")
-        x = x.masked_fill(~video_mask[:, :, None, None], 0)
-        def project(blocks):
-            features = x
-            for block in blocks:
-                features = block(features, video_mask)
-            return features.mean(dim=2).reshape(
-                B, T, self.n_head, self.head_dim
-            ).transpose(1, 2)
-        Q, K, V = project(self.W_query), project(self.W_key), project(self.W_value)
-        scores = (Q @ K.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        key_mask = video_mask[:, None, None, :]
-        scores = scores.masked_fill(~key_mask, torch.finfo(scores.dtype).min)
-        weights = scores.softmax(dim=-1).masked_fill(~key_mask, 0)
-        context = self.dropout(weights) @ V
-        context = context.transpose(1, 2).contiguous().reshape(B, T, self.hidden_dim)
-        return self.out_projection(context).masked_fill(~video_mask[:, :, None], 0)

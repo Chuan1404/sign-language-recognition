@@ -20,7 +20,6 @@ from config import DEVICE, ROOT
 from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.models import ISLR_Transformer, ISLR_Transformer_VCN
 from src.training.train import collate_fn
-from src.utils import FusionComponent
 
 
 def parse_args():
@@ -32,8 +31,6 @@ def parse_args():
     p.add_argument("--split", default="test")
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--top_errors", type=int, default=20)
-    p.add_argument("--only_important", action="store_true")
-    p.add_argument("--indices_dir", default=str(Path(ROOT) / "outputs/selected_rgb"))
     args = p.parse_args()
     if args.batch_size < 1 or args.top_errors < 1:
         p.error("batch_size and top_errors must be positive")
@@ -61,12 +58,7 @@ def main(args):
     if "epoch" in checkpoint:
         print(f"Saved epoch: {checkpoint['epoch'] + 1}")
 
-    dataset_kwargs = dict(fusion_component=FusionComponent(), mode=args.split)
-    dataset_cls = WLASLLandmarksDataset
-    if args.only_important:
-        dataset_cls = WLASLLandmarksDataset
-        dataset_kwargs["indices_dir"] = args.indices_dir
-    dataset = dataset_cls(args.data_path, args.label_path, **dataset_kwargs)
+    dataset = WLASLLandmarksDataset(args.data_path, args.label_path, mode=args.split)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False,
                         collate_fn=collate_fn, num_workers=0)
 

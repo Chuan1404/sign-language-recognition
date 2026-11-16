@@ -53,9 +53,9 @@
     <!-- ─── Col 2: Camera stream ─── -->
     <div id="stream-column">
         <p class="camera-instructions">
-            Sau khi ký hiệu: dùng đầu ngón trỏ giữ trong ô 1 giây để chọn từ.
-            Dùng một tay; ưu tiên tay phải nếu thấy cả hai tay.
-            Chọn CANCEL để thử lại, rồi đưa tay ra khỏi khung trước khi ký hiệu tiếp.
+            After signing, hold your index fingertip inside a box for one second to select a word.
+            Use one hand. If both hands are visible, the app uses your right hand.
+            Select CANCEL to try again, then move your hand out of the frame before signing again.
         </p>
         <div id="stream-area">
             <img src="{{ url_for('video') }}" alt="Camera feed" />
@@ -215,7 +215,7 @@ async function fetchPredictedText() {
         const res  = await fetch('/predicted_text');
         const data = await res.json();
         const words = data.words || [];
-        statusLabel.textContent = data.choosing ? 'Chọn từ · giữ 1 giây' : 'Ready';
+        statusLabel.textContent = data.choosing ? 'Select a word · hold for 1 second' : 'Ready';
 
         if (JSON.stringify(words) !== JSON.stringify(lastWords)) {
             lastWords = words;

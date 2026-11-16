@@ -1,4 +1,7 @@
+import inspect
+import json
 import os
+from pathlib import Path
 
 import torch
 
@@ -11,7 +14,7 @@ MAX_FRAMES = 100
 
 WLASL_RAW_DATA = os.path.join(ROOT, "datasets/raw/WLASL/videos")
 
-_REMOVE_POSE_IDX = [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+_REMOVE_POSE_IDX = [1, 2, 3, 4, 5, 6, 7, 8, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
 # _REMOVE_POSE_IDX = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
 _N_POSE = 33 - len(_REMOVE_POSE_IDX)
 _N_HAND = 21
@@ -25,6 +28,23 @@ _REMOVE_VIDEO_IDS = [
                     # '08429',
                     ]
 # _REMOVE_VIDEO_IDS = []
+
+
+def load_model_kwargs(model_cls, num_classes, num_nodes, **overrides):
+    settings = {"num_classes": num_classes}
+    if num_classes in (100, 2000):
+        path = Path(__file__).resolve().parent / "config" / f"WLASL{num_classes}.json"
+        with path.open(encoding="utf-8") as file:
+            settings = json.load(file)
+        if settings["num_classes"] != num_classes:
+            raise ValueError(f"{path} must define num_classes={num_classes}")
+
+    settings["num_nodes"] = num_nodes
+    settings.update({key: value for key, value in overrides.items() if value is not None})
+    parameters = inspect.signature(model_cls).parameters
+    if "hidden_dim" in parameters and "d_model" in settings:
+        settings.setdefault("hidden_dim", settings["d_model"])
+    return {key: value for key, value in settings.items() if key in parameters}
 
 
 def set_seed(seed=42):

@@ -1,4 +1,4 @@
-"""Group test mistakes by ground-truth gloss and export all train/test videos.
+"""Group test mistakes by ground-truth gloss and export all reference videos.
 
 Layout: <ground_truth>/<ground_truth or predicted_gloss>/<split>_<id>.mp4.
 Every exported video contains the saved original MediaPipe keypoints.
@@ -15,7 +15,6 @@ import shutil
 import stat
 import sys
 from collections import Counter, defaultdict
-from functools import partial
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -28,10 +27,10 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import DEVICE, ROOT, WLASL_RAW_DATA, _COORD_DIM, _NUM_NODE
+from config import DEVICE, ROOT, WLASL_RAW_DATA, _NUM_NODE
 from src.data.WSASL_raw import WLASLLandmarksDataset
 from src.data.video_filter import excluded_video_ids
-from src.models import ISLR_GCN, ISLR_Transformer, ISLR_Transformer_VCN
+from src.models import ISLR_Causal_Transformer, ISLR_Transformer, ISLR_Transformer_VCN
 from src.training.train import collate_fn
 
 HAND_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7),
@@ -44,14 +43,15 @@ POSE_EDGES = [(11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", default=str(Path(ROOT) / "outputs/models/landmarks_100_finger_delta.pt"))
+    parser.add_argument("--checkpoint", default=str(Path(ROOT) / "outputs/models/landmarks_2000_finger_delta.pt"))
     parser.add_argument("--data_path", default=str(Path(ROOT) / "datasets/processed/wlasl_features_0_6"))
-    parser.add_argument("--label_path", default=str(Path(ROOT) / "datasets/annotations/WLASL100"))
+    parser.add_argument("--label_path", default=str(Path(ROOT) / "datasets/annotations/WLASL2000"))
     parser.add_argument("--video_dir", default=WLASL_RAW_DATA)
     parser.add_argument("--output", default=str(PROJECT / "outputs/detail_wrong_video_by_gloss"),
                         help="Export directory; deleted and recreated on every run")
-    parser.add_argument("--model", choices=("auto", "gcn", "transformer", "transformer_gcn", "transformer_vcn"), default="auto",
+    parser.add_argument("--model", choices=("auto", "transformer", "causal_transformer", "transformer_gcn", "transformer_vcn"), default="auto",
                         help="transformer_gcn and transformer_vcn both use ISLR_Transformer_VCN, matching main.py")
+    parser.add_argument("--val_mode", choices=("test", "val", "train"), default="test")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--device", default=str(DEVICE))
     parser.add_argument("--report_only", action="store_true", help="Evaluate without exporting videos")
@@ -66,49 +66,40 @@ def parse_args(argv=None):
 def load_model(checkpoint_path, architecture, num_classes, device):
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     state = checkpoint["model"]
+    models = {"transformer_gcn": ISLR_Transformer_VCN, "transformer": ISLR_Transformer,
+              "causal_transformer": ISLR_Causal_Transformer}
     if architecture == "auto":
-        if "shape_projection.0.weight" in state and "gcn_block.0.gcn.phi.weight" in state:
-            architecture = "transformer_gcn"
-        elif "pose_projection.0.weight" in state:
-            architecture = "transformer"
-        elif "gcn_block.0.linear.0.weight" in state:
-            architecture = "gcn"
-        else:
-            raise ValueError("Cannot identify a main.py architecture; supply --model explicitly")
+        name = checkpoint.get("model_name")
+        architecture = next((key for key, cls in models.items() if cls.__name__ == name), None)
+        if architecture is None:
+            if name is None and "shape_projection.0.weight" in state and any(k.startswith("gcn_block.") for k in state):
+                architecture = "transformer_gcn"
+            else:
+                raise ValueError(f"Cannot identify checkpoint model {name!r}; supply --model explicitly")
+    elif architecture == "transformer_vcn":
+        architecture = "transformer_gcn"
+    cls = models[architecture]
     kwargs = dict(checkpoint.get("model_kwargs", {}))
     if kwargs.get("num_classes", num_classes) != num_classes:
         raise ValueError("Checkpoint classes do not match gloss2idx.json")
     kwargs.setdefault("num_classes", num_classes)
     if kwargs.get("num_nodes", _NUM_NODE) != _NUM_NODE:
         raise ValueError("Expected a landmark checkpoint from main.py, not a contour/mesh checkpoint")
-    cls = {"gcn": ISLR_GCN, "transformer": ISLR_Transformer,
-           "transformer_gcn": ISLR_Transformer_VCN,
-           "transformer_vcn": ISLR_Transformer_VCN}[architecture]
-    if cls is ISLR_Transformer_VCN:
-        # main.py checkpoints may omit channels and rely on defaults that later change.
-        channel_weights = sorted(
-            (int(match.group(1)), weight)
-            for key, weight in state.items()
-            if (match := re.fullmatch(r"gcn_block\.(\d+)\.gcn\.phi\.weight", key))
-        )
-        kwargs.setdefault("gcn_channels", tuple(weight.shape[0] for _, weight in channel_weights))
+    width_key = "d_model" if cls is ISLR_Transformer_VCN else "hidden_dim"
+    kwargs.setdefault(width_key, state["pos_encoder.pe"].shape[-1])
+    kwargs.setdefault("max_seq_len", state["pos_encoder.pe"].shape[1])
+    kwargs.setdefault("dim_feedforward", state["encoder.layers.0.linear1.weight"].shape[0])
+    kwargs.setdefault("num_encoder_layers", sum(bool(re.fullmatch(r"encoder\.layers\.\d+\.linear1\.weight", k))
+                                                for k in state))
     model = cls(**kwargs)
     model.load_state_dict(state, strict=True)
     return model.to(device).eval(), architecture, kwargs
 
 
-def collate_for_model(batch, architecture, single_feature=False):
-    features, labels, mask, video_ids = collate_fn(batch)
-    if architecture not in ("transformer_gcn", "transformer_vcn") or single_feature:
-        dim = _NUM_NODE * _COORD_DIM
-        features = features[..., dim:2 * dim]
-    return features, labels, mask, video_ids
-
-
 @torch.inference_mode()
 def evaluate(model, loader, idx2gloss, device):
     records = []
-    for features, labels, mask, video_ids in tqdm(loader, desc="Test predictions"):
+    for features, labels, mask, video_ids in tqdm(loader, desc="Predictions"):
         output = model(features.to(device), video_mask=mask.to(device))
         logits = output["logits"] if isinstance(output, dict) else output[0]
         probabilities = logits.softmax(dim=-1).cpu()
@@ -121,7 +112,7 @@ def evaluate(model, loader, idx2gloss, device):
                                 truth_probability=float(probabilities[index, truth]),
                                 correct=truth == predicted))
     if not records:
-        raise RuntimeError("No usable test samples")
+        raise RuntimeError("No usable evaluation samples")
     return records
 
 
@@ -204,7 +195,7 @@ def safe_name(text):
     return re.sub(r"[^\w.-]+", "_", str(text), flags=re.UNICODE).strip(". ")[:60] or "unknown"
 
 
-def build_groups(records, annotation_dir):
+def build_groups(records, annotation_dir, evaluation_split="test"):
     excluded = excluded_video_ids()
     records = [row for row in records if str(row["video_id"]) not in excluded]
     mistakes = sorted((dict(row) for row in records if not row["correct"]),
@@ -219,7 +210,7 @@ def build_groups(records, annotation_dir):
         wanted[row["truth"]].add(row["prediction"])
     annotations = defaultdict(list)
     seen = set()
-    for split in ("train", "test"):
+    for split in dict.fromkeys(("train", evaluation_split)):
         with (Path(annotation_dir) / f"{split}.json").open(encoding="utf-8") as handle:
             entries = json.load(handle)
         for entry in sorted(entries, key=lambda row: str(row["video_id"])):
@@ -285,7 +276,7 @@ def export_groups(groups, args, output, progress_callback):
           f"{sum(len(entries) for entries in tasks.values())} folder entries", flush=True)
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = [pool.submit(render, key, entries) for key, entries in tasks.items()]
-        for index, future in enumerate(tqdm(as_completed(futures), total=len(futures), desc="Export train/test videos"), 1):
+        for index, future in enumerate(tqdm(as_completed(futures), total=len(futures), desc="Export reference videos"), 1):
             for entry, error in future.result():
                 entry.update(status="error" if error else "exported", error=error)
             if index % 10 == 0:
@@ -333,7 +324,7 @@ def write_reports(output, records, mistakes, groups, metadata):
                     items.append(f"<p>{label}: {html.escape(video['error'] or video['status'])}</p>")
             role = "Ground truth" if collection["role"] == "ground_truth" else "Predicted gloss"
             collection_html.append(f"<div><h3>{role}: {html.escape(collection['gloss'])}</h3>"
-                                   f"<p>{len(collection['videos'])} train/test videos</p>{''.join(items)}</div>")
+                                   f"<p>{len(collection['videos'])} reference videos</p>{''.join(items)}</div>")
         errors = ', '.join(f"{row['video_id']} → {row['prediction']}" for row in group["mistakes"])
         sections.append(f"<section><h2>{html.escape(group['ground_truth'])}</h2><p>{html.escape(errors)}</p>"
                         f"<div class='collections'>{''.join(collection_html)}</div></section>")
@@ -341,9 +332,9 @@ def write_reports(output, records, mistakes, groups, metadata):
                 "<style>body{font:16px system-ui;max-width:1400px;margin:32px auto;padding:16px}"
                 ".collections{display:flex;gap:20px;flex-wrap:wrap}.collections>div{flex:1;min-width:280px}"
                 "video{width:100%}section{border-top:1px solid #ccc;padding:16px 0}details{margin:12px 0}</style>"
-                f"<h1>{len(groups)} ground-truth glosses — {len(mistakes)}/{len(records)} test mistakes</h1>"
+                f"<h1>{len(groups)} ground-truth glosses — {len(mistakes)}/{len(records)} {metadata['split']} mistakes</h1>"
                 f"<p>Top-1: {report['top1_accuracy']:.2%}. Exported: {report['exported_entries']}/{len(videos)} videos.</p>"
-                "<p>Each ground-truth folder contains all train/test videos of that gloss and each confused gloss. "
+                "<p>Each ground-truth folder contains all reference videos of that gloss and each confused gloss. "
                 "Overlays use saved MediaPipe points. Expand a video to play, or open its MP4 externally.</p>"
                 + "".join(sections))
     (output / "index.html").write_text(document, encoding="utf-8")
@@ -377,42 +368,91 @@ def reset_output_dir(output, args):
     return output
 
 
+def write_gloss_statistics(path, records, gloss2idx):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    by_gloss = defaultdict(lambda: defaultdict(list))
+    for row in records:
+        by_gloss[row["truth"]][row["prediction"]].append(str(row["video_id"]))
+
+    workbook = Workbook()
+    summary = workbook.active
+    summary.title = "Gloss Summary"
+    details = workbook.create_sheet("Prediction Details")
+    summary.append(["Ground Truth Gloss", "Total Videos", "Correct", "Incorrect", "Accuracy", "Misclassified As"])
+    details.append(["Ground Truth Gloss", "Predicted Gloss", "Result", "Video Count", "Total Ground Truth Videos",
+                    "Percentage of Ground Truth Videos", "Video IDs"])
+    for gloss in sorted(gloss2idx):
+        predictions = by_gloss[gloss]
+        total = sum(map(len, predictions.values()))
+        correct = len(predictions.get(gloss, ()))
+        confusions = []
+        for predicted, ids in sorted(predictions.items(), key=lambda pair: (-len(pair[1]), pair[0])):
+            fraction = len(ids) / total
+            match = predicted == gloss
+            if not match:
+                confusions.append(f"{predicted} — {len(ids)} ({fraction:.2%})")
+            details.append([gloss, predicted, "Correct" if match else "Incorrect", len(ids), total,
+                            fraction, ", ".join(sorted(ids))])
+            detail_row = details.max_row
+            details.cell(detail_row, 6).number_format = "0.00%"
+            details.cell(detail_row, 7).number_format = "@"
+            details.cell(detail_row, 7).alignment = Alignment(wrap_text=True)
+        summary.append([gloss, total, correct, total - correct, correct / total if total else None,
+                        "\n".join(confusions) or ("None" if total else "No videos in split")])
+        summary.cell(summary.max_row, 5).number_format = "0.00%"
+        summary.cell(summary.max_row, 6).alignment = Alignment(wrap_text=True)
+        summary.row_dimensions[summary.max_row].height = min(409, 16 * max(1, len(confusions)))
+
+    for sheet, widths in ((summary, (25, 16, 12, 12, 14, 48)), (details, (25, 25, 14, 16, 28, 37, 58))):
+        sheet.freeze_panes = "B2"
+        sheet.auto_filter.ref = sheet.dimensions
+        for col, width in enumerate(widths, 1):
+            sheet.column_dimensions[get_column_letter(col)].width = width
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="184665")
+        sheet.row_dimensions[1].height = 24
+    workbook.save(path)
+
+
 def main(args):
+    with (Path(args.label_path) / "gloss2idx.json").open(encoding="utf-8") as handle:
+        gloss2idx = json.load(handle)
     if args.predictions_json:
         with Path(args.predictions_json).open(encoding="utf-8") as handle:
             previous = json.load(handle)
         records = previous["predictions"]
-        if previous.get("split") != "test" or not records:
-            raise ValueError("predictions_json must contain nonempty test predictions")
+        if previous.get("split") != args.val_mode or not records:
+            raise ValueError("predictions_json must contain predictions for the selected split")
         metadata = {key: previous[key] for key in ("checkpoint", "model", "split", "skipped_samples") if key in previous}
         metadata["predictions_source"] = str(Path(args.predictions_json).resolve())
         # Ensure the saved predictions describe the current test labels.
-        with (Path(args.label_path) / "test.json").open(encoding="utf-8") as handle:
+        with (Path(args.label_path) / f"{args.val_mode}.json").open(encoding="utf-8") as handle:
             truth = {str(row["video_id"]): row["gloss"] for row in json.load(handle)}
         for row in records:
             if truth.get(row["video_id"]) != row["truth"]:
-                raise ValueError("Saved predictions do not match the selected test annotations")
+                raise ValueError("Saved predictions do not match the selected split annotations")
+            row["correct"] = row["truth"] == row["prediction"]
     else:
-        with (Path(args.label_path) / "gloss2idx.json").open(encoding="utf-8") as handle:
-            gloss2idx = json.load(handle)
         idx2gloss = {int(value): gloss for gloss, value in gloss2idx.items()}
         device = torch.device(args.device)
-        model, architecture, kwargs = load_model(args.checkpoint, args.model, len(gloss2idx), device)
+        model, architecture, _ = load_model(args.checkpoint, args.model, len(gloss2idx), device)
         print(f"Checkpoint: {args.checkpoint}\nArchitecture: {architecture}; device: {device}", flush=True)
-        dataset = WLASLLandmarksDataset(args.data_path, args.label_path, mode="test", cache_landmarks=False)
-        loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0,
-                            collate_fn=partial(collate_for_model, architecture=architecture,
-                                               single_feature=kwargs.get("single_feature", False)))
+        dataset = WLASLLandmarksDataset(args.data_path, args.label_path, mode=args.val_mode, cache_landmarks=False)
+        loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_fn)
         records = evaluate(model, loader, idx2gloss, device)
         metadata = dict(checkpoint=str(Path(args.checkpoint).resolve()), model=architecture,
-                        split="test", skipped_samples=dict(dataset.skipped))
+                        split=args.val_mode, skipped_samples=dict(dataset.skipped))
     excluded = excluded_video_ids()
     removed_predictions = sum(str(row["video_id"]) in excluded for row in records)
     records = [row for row in records if str(row["video_id"]) not in excluded]
     if not records:
-        raise RuntimeError("No test predictions remain after _REMOVE_VIDEO_IDS filtering")
+        raise RuntimeError("No predictions remain after _REMOVE_VIDEO_IDS filtering")
     metadata.update(excluded_video_ids=sorted(excluded), excluded_saved_predictions=removed_predictions)
-    mistakes, groups = build_groups(records, args.label_path)
+    mistakes, groups = build_groups(records, args.label_path, args.val_mode)
     # Load reused predictions above before deleting an output that may contain them.
     output = reset_output_dir(args.output, args)
     metadata.update(data_path=str(Path(args.data_path).resolve()),
@@ -420,10 +460,11 @@ def main(args):
     def save():
         return write_reports(output, records, mistakes, groups, metadata)
     save()
-    print(f"Wrong test videos: {len(mistakes)}/{len(records)}; ground-truth gloss folders: {len(groups)}", flush=True)
+    print(f"Wrong {args.val_mode} videos: {len(mistakes)}/{len(records)}; ground-truth gloss folders: {len(groups)}", flush=True)
     if not args.report_only:
         export_groups(groups, args, output, save)
     report = save()
+    write_gloss_statistics(output / "gloss_statistics.xlsx", records, gloss2idx)
     print(f"\nTop-1: {report['top1_accuracy']:.2%}; exported: {report['exported_entries']}/{report['video_entries']}; "
           f"failed: {report['failed_entries']}")
     print(f"Output: {output}\nReport: {output / 'index.html'}", flush=True)

@@ -424,7 +424,7 @@ def test(model, loader, idx2gloss, top_k=5, device="cuda"):
     total_correct_topk = 0
     total_samples = 0
 
-    # Đếm các cặp:
+    # Count misclassified label pairs.
     # (true_label, predicted_label)
     wrong_predictions = Counter()
 

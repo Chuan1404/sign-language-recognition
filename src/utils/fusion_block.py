@@ -95,65 +95,6 @@ class FusionComponent:
 
         return fused_flat
 
-    def fuse_follow_velocity(self, pose_feature, left_feature, right_feature):
-        T = pose_feature.shape[0]
-
-        pose = np.asarray(pose_feature).reshape(T, 33, _COORD_DIM)
-        left = np.asarray(left_feature).reshape(T, 21, _COORD_DIM)
-        right = np.asarray(right_feature).reshape(T, 21, _COORD_DIM)
-
-        pose = np.delete(pose, _REMOVE_POSE_IDX, axis=1)
-        points = np.concatenate([pose, left, right], axis=1).astype(np.float32)
-
-        present = np.any(points != 0, axis=-1) & np.isfinite(points).all(axis=-1)
-        valid_pairs = present[1:] & present[:-1]
-        delta = np.zeros_like(points[1:, :, :2])
-
-        np.subtract(points[1:, :, :2], points[:-1, :, :2],
-                    out=delta, where=valid_pairs[..., None])
-
-        velocity = np.zeros((T, points.shape[1], 2), dtype=np.float32)
-        velocity[:-1] = delta
-        speed = np.linalg.norm(velocity, axis=-1)
-        max_speed = speed.max(axis=1, keepdims=True)
-        velocity = np.divide(
-            velocity, max_speed[..., None], out=np.zeros_like(velocity),
-            where=max_speed[..., None] > 0,
-        )
-        normalized_speed = np.divide(
-            speed, max_speed, out=np.zeros_like(speed), where=max_speed > 0
-        )
-        below_threshold = normalized_speed < 0.1
-        removed_mask = below_threshold & (speed > 0)
-        # removed_count = np.count_nonzero(removed_mask)
-        # moving_count = np.count_nonzero(speed > 0)
-        velocity[below_threshold] = 0
-        # print(f"[Velocity] Filtered {removed_count}/{moving_count} moving frame-node pairs (< 0.1).")
-        pose_indices = np.delete(np.arange(33), _REMOVE_POSE_IDX)
-        node_names = ([f"pose[{i}]" for i in pose_indices]
-                      + [f"left_hand[{i}]" for i in range(21)]
-                      + [f"right_hand[{i}]" for i in range(21)])
-        # for frame_idx in np.flatnonzero(removed_mask.any(axis=1)):
-        #     removed_nodes = np.flatnonzero(removed_mask[frame_idx])
-        #     details = ", ".join(
-        #         f"node {i} ({node_names[i]}, speed={normalized_speed[frame_idx, i]:.4f})"
-        #         for i in removed_nodes
-        #     )
-        #     print(f"[Velocity] Frame {frame_idx} -> {frame_idx + 1}: "
-        #           f"removed {len(removed_nodes)} nodes: {details}")
-        hand_removed_mask = removed_mask.copy()
-        hand_removed_mask[:, :len(pose_indices)] = False
-        for frame_idx in np.flatnonzero(hand_removed_mask.any(axis=1)):
-            removed_nodes = np.flatnonzero(hand_removed_mask[frame_idx])
-            details = ", ".join(
-                f"node {i} ({node_names[i]}, speed={normalized_speed[frame_idx, i]:.4f})"
-                for i in removed_nodes
-            )
-            # print(f"[Velocity] Frame {frame_idx} -> {frame_idx + 1}: "
-            #       f"removed {len(removed_nodes)} hand nodes: {details}")
-        # Preserve signed XY velocity for every node, flattened for feature concatenation.
-        return velocity.reshape(T, points.shape[1] * 2)
-
     def fuse_follow_shape(self, pose_feature, left_feature, right_feature):
         T = pose_feature.shape[0]
 
@@ -190,23 +131,6 @@ class FusionComponent:
 
         return fused_flat
 
-    def average_hand(self, hand_feature):
-        T = hand_feature.shape[0]
-
-        present_mask = ~np.all(hand_feature == 0, axis=-1)
-
-        valid_count = present_mask.sum(axis=1, keepdims=True)
-
-        average_point = hand_feature.sum(axis=1) / np.maximum(valid_count, 1)
-        average_point = average_point.reshape(T, 1, _COORD_DIM)
-
-        root = average_point
-
-        normalize_hand_feature = hand_feature - root
-
-        normalize_hand_feature = normalize_hand_feature * present_mask[..., None]
-
-        return normalize_hand_feature
 
     def normalize_by_wrist(self, hand_feature, wrist=None):
 
@@ -244,7 +168,7 @@ class FusionComponent:
             axis=-1,
         )
 
-        # Thiếu vai hoặc khoảng cách quá nhỏ: không scale.
+        # Skip scaling if a shoulder is missing or the shoulders are too close together.
         valid = shoulders_present & np.isfinite(scale) & (scale > _EPS)
         scale = np.where(valid, scale, 1.0)
 

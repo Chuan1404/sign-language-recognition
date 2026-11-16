@@ -319,7 +319,7 @@ class ISLR_Transformer_VCN(nn.Module):
 
         # x = x_shape + x_average + x_position
 
-        # Giữ nhánh GCN hiện tại, đầu vào là shape feature.
+        # The GCN branch takes the position features.
         x_gcn = self.encode_gcn(position_feature.reshape(B, T, self.num_nodes, _COORD_DIM), video_mask, )
         x = x_shape + x_average + x_position + x_gcn
         # x = x_average                                     # best=73.00% loss=1.2133 75.00%

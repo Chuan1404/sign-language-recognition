@@ -126,7 +126,7 @@ class FaceDetection:
         h, w = annotated_image.shape[:2]
 
         for face_landmarks in face_landmarks_list:
-            # Vẽ các đường nối của môi
+            # Draw the connections between lip landmarks.
             for connection in vision.FaceLandmarksConnections.FACE_LANDMARKS_LIPS:
                 start = face_landmarks[connection.start]
                 end = face_landmarks[connection.end]
@@ -136,7 +136,7 @@ class FaceDetection:
 
                 cv2.line(annotated_image, start_point, end_point, (0, 255, 0), 2)
 
-            # Vẽ các điểm môi
+            # Draw the lip landmarks.
             lip_indices = set()
             for connection in vision.FaceLandmarksConnections.FACE_LANDMARKS_LIPS:
                 lip_indices.add(connection.start)

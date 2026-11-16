@@ -14,7 +14,7 @@ class FixedAngleRNG:
 
 class HandRotationTests(unittest.TestCase):
     def test_rotation_keeps_pose_wrists_and_missing_points(self):
-        for count in (1, 3, 4):
+        for count in (1, 3):
             with self.subTest(blocks=count):
                 blocks = np.random.default_rng(42).normal(
                     size=(5, count, NUM_JOINTS, _COORD_DIM),

@@ -61,8 +61,19 @@ class SkeletonAugmentor:
         shoulder_width_range=(0.70, 0.70),
         hand_shift_range=(0.20, 0.20),
         mirror_prob=0.5,
+        enable_rotation=True,
+        enable_scale=True,
     ):
+        self.enable_rotation = enable_rotation
+        self.enable_scale = enable_scale
         self.enable_viewpoint = enable_viewpoint
+        kept = [i for i in range(33) if i not in set(_REMOVE_POSE_IDX)]
+        self.shoulder_indices = tuple(kept.index(i) for i in (11, 12) if i in kept)
+        self.elbow_indices = tuple(kept.index(i) for i in (13, 14) if i in kept)
+        if enable_viewpoint and len(self.shoulder_indices) != 2:
+            raise ValueError("Viewpoint augmentation requires pose shoulders 11 and 12 to be retained")
+        if speed_perturb_prob > 0 and not 0 < speed_range[0] < 1 < speed_range[1]:
+            raise ValueError("speed_range must satisfy 0 < slow_factor < 1 < fast_factor")
         self.shoulder_width_range = shoulder_width_range
         self.hand_shift_range = hand_shift_range
         self.rotation_deg = rotation_deg
@@ -78,46 +89,62 @@ class SkeletonAugmentor:
         self.enable_noise = enable_noise
         self.rng = rng if rng is not None else np.random.default_rng()
 
-    def __call__(self, fused, view_direction=None):
-        fused = np.asarray(fused, dtype=np.float32)
+    @property
+    def augmentation_names(self):
+        """One indexed sample per enabled method; speed contributes two samples.
 
-        T, flat_dim = fused.shape[0], fused.shape[1]
-
-        flatten = NUM_JOINTS * _COORD_DIM  # 55 * 2 = 110
-        num_blocks = flat_dim // flatten  # 1 hoặc 3
-
-        blocks = fused.reshape(T, num_blocks, NUM_JOINTS, _COORD_DIM).copy()
-
-        present_mask = np.any(blocks != 0, axis=(1, 3))  # (T, N)
-
-        # blocks = self._rotate(blocks)
-        # blocks = self._scale(blocks)
-
-        # if self.enable_mirror and self.rng.random() < self.mirror_prob:
-        #     blocks, present_mask = self._mirror(blocks, present_mask)
-
-        if self.rng.random() < self.speed_perturb_prob:
-            blocks, present_mask = self._speed_perturb(blocks, present_mask)
-            T = blocks.shape[0]
-
-        # ── Gaussian noise ──
-        # if (
-        #     self.enable_noise
-        #     and self.noise_std > 0
-        #     and self.rng.random() < self.noise_prob
-        # ):
-        #     blocks = self._add_noise(blocks, present_mask)
-
+        Probability options act as on/off switches here (>0 enables a variant).
+        An indexed variant always applies its method, without a random skip.
+        """
+        names = []
+        # if self.enable_rotation and self.rotation_deg > 0:
+        #     names.append("rotate")
+        # if self.enable_scale and tuple(self.scale_range) != (1, 1):
+        #     names.append("scale")
+        # if self.enable_mirror and self.mirror_prob > 0:
+        #     names.append("mirror")
+        if self.speed_perturb_prob > 0:
+            names.extend(("speed_fast", "speed_slow"))
+        # if self.enable_noise and self.noise_std > 0 and self.noise_prob > 0:
+        #     names.append("noise")
         # if self.enable_viewpoint:
-        #     blocks = self._simulate_viewpoint(blocks, present_mask, view_direction)
+        #     names.append("viewpoint")
+        # if self.frame_dropout_prob > 0 and self.max_frame_dropout_ratio > 0:
+        #     names.append("drop_frames")
+        return tuple(names)
 
-        blocks = blocks * present_mask[:, None, :, None]  # broadcast: (T,1,N,1)
-        coords = blocks.reshape(T, flat_dim)
+    def __call__(self, fused, method=None, view_direction=None):
+        fused = np.asarray(fused, dtype=np.float32)
+        block_dim = NUM_JOINTS * _COORD_DIM
+        names = self.augmentation_names
+        if method is None:
+            if not names:
+                return fused.copy()
+            method = self.rng.choice(names)
+        if method not in names:
+            raise ValueError(f"Unknown or disabled augmentation: {method}")
 
-        # if self.rng.random() < self.frame_dropout_prob:
-        #     coords = self._drop_frames(coords)
-
-        return coords.astype(np.float32)
+        frames, flat_dim = fused.shape
+        blocks = fused.reshape(frames, flat_dim // block_dim, NUM_JOINTS, _COORD_DIM).copy()
+        present_mask = np.any(blocks != 0, axis=(1, 3))
+        if method == "rotate":
+            blocks = self._rotate(blocks)
+        elif method == "scale":
+            blocks = self._scale(blocks)
+        elif method == "mirror":
+            blocks, present_mask = self._mirror(blocks, present_mask)
+        elif method in ("speed_fast", "speed_slow"):
+            blocks, present_mask = self._speed_perturb(
+                blocks, present_mask, direction=method.removeprefix("speed_"),
+            )
+        elif method == "noise":
+            blocks = self._add_noise(blocks, present_mask)
+        elif method == "viewpoint":
+            blocks = self._simulate_viewpoint(blocks, present_mask, view_direction)
+        elif method == "drop_frames":
+            return self._drop_frames(fused.copy()).astype(np.float32)
+        blocks *= present_mask[:, None, :, None]
+        return blocks.reshape(len(blocks), flat_dim).astype(np.float32)
 
     def _mirror(self, blocks, present_mask):
         """Reflect normalized x coordinates and swap anatomical left/right joints."""
@@ -179,13 +206,22 @@ class SkeletonAugmentor:
             raise ValueError(f"Unsupported _COORD_DIM: {_COORD_DIM}")
         return rotate_hand_blocks(coords, R)
 
-    def _speed_perturb(self, blocks, present_mask):
+    def _speed_perturb(self, blocks, present_mask, direction=None):
         T = blocks.shape[0]
         if T <= 2:
             return blocks, present_mask
 
-        factor = self.rng.uniform(*self.speed_range)
-        new_T = max(2, round(T / factor))
+        if direction == "fast":
+            factor = self.speed_range[1]
+            new_T = min(T - 1, max(2, round(T / factor)))
+        elif direction == "slow":
+            factor = self.speed_range[0]
+            new_T = max(T + 1, round(T / factor))
+        elif direction is None:
+            factor = self.rng.uniform(*self.speed_range)
+            new_T = max(2, round(T / factor))
+        else:
+            raise ValueError("direction must be 'fast' or 'slow'")
         if new_T == T:
             return blocks, present_mask
 
@@ -217,7 +253,7 @@ class SkeletonAugmentor:
         )
         mask = present_mask[
             :, None, :, None
-        ]  # (T, 1, N, 1) → broadcast với (T, B, N, C)
+        ]  # Broadcast (T, 1, N, 1) across feature blocks (T, B, N, C).
         return blocks + noise * mask
     #
     def _drop_frames(self, coords_flat):
@@ -232,40 +268,41 @@ class SkeletonAugmentor:
         keep_mask[drop_idx] = False
         return coords_flat[keep_mask]
 
-class AugmentedSkeletonDataset:
-    def __init__(self, base_dataset, augmentor=None, num_augmentations=1, seed=None):
+class AugmentedSkeletonDataset(torch.utils.data.Dataset):
+    """Original + one independent copy per method, including fast and slow speed.
+
+    Every variant starts from the original sample. Samples are generated lazily,
+    preserving labels/video IDs and leaving the base dataset cache unchanged.
+    """
+
+    def __init__(self, base_dataset, augmentor=None, seed=None):
         self.base_dataset = base_dataset
-        self.num_augmentations = num_augmentations
         self.base_len = len(base_dataset)
+        self._augmentor = augmentor if augmentor is not None else SkeletonAugmentor()
+        self.variant_names = ("original", *self._augmentor.augmentation_names)
+        self.num_augmentations = len(self.variant_names) - 1
         self._seed = seed
-        self._augmentor = augmentor
+        self._worker_id = None
 
     def _get_augmentor(self):
-        if self._augmentor is None:
-            worker_info = torch.utils.data.get_worker_info()
-            worker_id = worker_info.id if worker_info is not None else 0
-            seed_seq = np.random.SeedSequence(self._seed).spawn(worker_id + 1)[-1]
-            rng = np.random.default_rng(seed_seq)
-            self._augmentor = SkeletonAugmentor(rng=rng)
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info is not None else 0
+        if self._seed is not None and self._worker_id != worker_id:
+            self._augmentor.rng = np.random.default_rng(np.random.SeedSequence([self._seed, worker_id]))
+            self._worker_id = worker_id
         return self._augmentor
 
     def __len__(self):
-        return self.base_len * (1 + self.num_augmentations)
+        return self.base_len * len(self.variant_names)
 
     def __getitem__(self, idx):
-        stride = 1 + self.num_augmentations
-        base_idx = idx // stride
-        variant = idx % stride
-
+        if idx < 0:
+            idx += len(self)
+        if not 0 <= idx < len(self):
+            raise IndexError(idx)
+        base_idx, variant = divmod(idx, len(self.variant_names))
         feature, label, video_id = self.base_dataset[base_idx]
         if variant == 0:
             return np.array(feature, dtype=np.float32, copy=True), label, video_id
-
-        augmentor = self._get_augmentor()
-        if isinstance(augmentor, SkeletonAugmentor):
-            direction = "left" if variant % 2 == 1 else "right"
-            feature_aug = augmentor(feature, view_direction=direction)
-        else:
-            feature_aug = augmentor(feature)
-
+        feature_aug = self._get_augmentor()(feature, method=self.variant_names[variant])
         return feature_aug, label, video_id

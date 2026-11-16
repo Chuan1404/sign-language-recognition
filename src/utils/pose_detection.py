@@ -49,7 +49,7 @@ class PoseDetection:
 
         for pose_landmarks in pose_landmarks_list:
             # MediaPipe Tasks:
-            # pose_landmarks là list[NormalizedLandmark]
+            # pose_landmarks is a list of NormalizedLandmark objects.
             num_landmarks = len(pose_landmarks)
 
             all_conns = (
@@ -58,12 +58,12 @@ class PoseDetection:
                 else None
             )
 
-            # Tạo drawing spec cho TẤT CẢ landmark
+            # Create a drawing specification for every landmark.
             landmark_drawing_spec = {}
 
             for idx in range(num_landmarks):
                 if idx in remove_pose_idx:
-                    # Không vẽ landmark này
+                    # Skip this landmark when drawing.
                     landmark_drawing_spec[idx] = mp_drawing_utils.DrawingSpec(
                         color=(0, 0, 0),
                         thickness=0,
@@ -77,7 +77,7 @@ class PoseDetection:
                         circle_radius=radius,
                     )
 
-            # Chỉ giữ connection khi cả 2 đầu đều không bị remove
+            # Keep connections only when both endpoints are retained.
             conns = None
 
             if all_conns is not None:

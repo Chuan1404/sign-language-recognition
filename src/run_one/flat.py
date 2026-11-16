@@ -16,7 +16,7 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 
 def build_video_id_to_gloss(wlasl_full_data):
-    """video_id -> gloss, tra từ file metadata gốc WLASL_v0_3.json"""
+    """Map each video_id to its gloss using the original WLASL_v0_3.json metadata."""
     video_id2gloss = {}
     for gloss_entry in wlasl_full_data:
         gloss = gloss_entry["gloss"]
@@ -84,7 +84,7 @@ def flatten_nslt():
             print(f"Unknown split: {split} (video_id={video_id})")
 
     # -------------------------------------------------
-    # Build vocabulary từ gloss thật (a-z), không phải class_id số
+    # Build the vocabulary from alphabetical gloss names rather than numeric class IDs.
     # -------------------------------------------------
 
     gloss_list = sorted(all_glosses)
@@ -116,7 +116,7 @@ def flatten_nslt():
         json.dump(idx2gloss, f, indent=2, ensure_ascii=False)
 
     print("=" * 60)
-    print("nslt_100.json flattened successfully (gloss từ WLASL_v0_3.json)")
+    print("nslt_100.json flattened successfully (glosses from WLASL_v0_3.json)")
     print("=" * 60)
     print(f"Glosses            : {len(gloss_list)}")
     print(f"Missing videos     : {skipped}")

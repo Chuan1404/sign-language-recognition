@@ -1,20 +1,15 @@
 import os
 import sys
 
-from models import ISLR_Transformer_FCN
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
-from functools import partial
-
 import argparse
 import json
 
 import torch
 from torch.utils.data import DataLoader
 
-from config import DEVICE, ROOT, _COORD_DIM, set_seed
+from config import DEVICE, ROOT, load_model_kwargs, set_seed, _NUM_NODE
 from src.data.augmentation import AugmentedSkeletonDataset, SkeletonAugmentor
-from src.models import ISLR_GCN, ISLR_Transformer_GCN, ISLR_Transformer, ISLR_Transformer_VCN
+from src.models import ISLR_Transformer, ISLR_Transformer_GCN
 from src.data.WSASL_raw import WLASLLandmarksDataset, NUM_JOINTS
 from src.training.train import collate_fn, train_one_epoch, validate
 
@@ -30,6 +25,8 @@ EPOCHS = 100
 TOP_K = 5
 PATIENCE = 20
 
+MODELS = {"transformer": ISLR_Transformer, "transformer_gcn": ISLR_Transformer_GCN}
+
 print(DEVICE)
 
 
@@ -38,7 +35,7 @@ def default_args():
     parser.add_argument("--data_path", default=f"{DATA_PATH}")
     parser.add_argument("--label_path", default=f"{LABEL_DIR}")
     parser.add_argument("--output", default=f"{os.path.join(OUTPUT_DIR, MODEL_NAME)}")
-    parser.add_argument("--model", default="transformer_gcn", choices=["gcn", "transformer", "transformer_gcn"], help="Model architecture")
+    parser.add_argument("--model", default="transformer_gcn", choices=list(MODELS), help="Model architecture")
     parser.add_argument("--val_mode", default="test")
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--top_k", type=int, default=TOP_K)
@@ -51,39 +48,32 @@ def default_args():
     return parser
 
 
-def collate_landmarks(batch, use_all_features=True):
-    features, labels, video_mask, video_ids = collate_fn(batch)
-    if not use_all_features:
-        # Plain GCN takes one coordinate block: average features.
-        feature_dim = NUM_JOINTS * _COORD_DIM
-        features = features[..., feature_dim:2 * feature_dim]
-    return features, labels, video_mask, video_ids
+
 
 
 def main(args):
     set_seed(args.seed)
-    if args.epochs < 1:
-        raise ValueError("epochs must be positive")
-    print(f"Landmark features: {os.path.abspath(args.data_path)}")
-    base_train = WLASLLandmarksDataset(
+    dataset_class = WLASLLandmarksDataset
+
+    base_train = dataset_class(
         args.data_path, args.label_path,
-        mode="train", include_velocity=args.model == "transformer"
+        mode="train"
     )
-    base_val = WLASLLandmarksDataset(
+    base_val = dataset_class(
         args.data_path, args.label_path,
-        mode=args.val_mode, include_velocity=args.model == "transformer"
+        mode=args.val_mode
     )
-    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor(), num_augmentations=1)
+
+    # train_dataset = AugmentedSkeletonDataset(base_train, SkeletonAugmentor(), seed=args.seed)
     train_dataset = base_train
 
     val_dataset = base_val
-    batch_collate = partial(collate_landmarks, use_all_features=args.model in ("transformer", "transformer_gcn"))
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=batch_collate,
+        collate_fn=collate_fn,
         num_workers=0,
         pin_memory=True,
     )
@@ -91,7 +81,7 @@ def main(args):
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=batch_collate,
+        collate_fn=collate_fn,
         num_workers=0,
         pin_memory=True,
     )
@@ -99,25 +89,11 @@ def main(args):
     with open(os.path.join(args.label_path, "gloss2idx.json"), "r") as f:
         gloss2idx = json.load(f)
 
-    num_classes = len(gloss2idx)
-    model_kwargs = {
-        "num_classes": num_classes,
-        # "num_nodes": NUM_JOINTS,
-    }
-
-    if args.model == "gcn":
-        print("Using model: ISLR_GCN")
-        model = ISLR_GCN(**model_kwargs).to(DEVICE)
-    elif args.model == "transformer_gcn":
-        print("Using model: ISLR_Transformer_VCN")
-        model_kwargs.update(max_seq_len=5000)
-        model = ISLR_Transformer_VCN(**model_kwargs).to(DEVICE)
-        # model = ISLR_Transformer_GCN_BEST(**model_kwargs).to(DEVICE)
-    else:
-        print("Using model: ISLR_Transformer")
-        model_kwargs.update(max_seq_len=5000)
-        model = ISLR_Transformer(**model_kwargs).to(DEVICE)
-
+    model_cls = MODELS[args.model]
+    print(_NUM_NODE)
+    model_kwargs = load_model_kwargs(model_cls, len(gloss2idx), NUM_JOINTS)
+    print(f"Using model: {model_cls.__name__}")
+    model = model_cls(**model_kwargs).to(DEVICE)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total params    : {total_params:,}")
@@ -142,13 +118,13 @@ def main(args):
         torch.cuda.empty_cache()
 
         train_loss = train_one_epoch(model, train_loader, optimizer, device=DEVICE)
+
         val_loss, val_top1_acc, val_topk_acc = validate(
             model, val_loader, top_k=args.top_k, device=DEVICE
         )
 
         scheduler.step(val_loss)
 
-        print(f"Train loss      : {train_loss:.4f}")
         print(f"Val    loss      : {val_loss:.4f}")
         print(f"Val    top-1 acc : {val_top1_acc * 100:.2f}%")
         print(f"Val   top-{args.top_k} acc : {val_topk_acc * 100:.2f}%")
@@ -167,6 +143,7 @@ def main(args):
                     "val_top1_acc": val_top1_acc,
                     "val_topk_acc": val_topk_acc,
                     "model_kwargs": model_kwargs,
+                    "model_name": type(model).__name__,
                 },
                 os.path.join(args.output),
             )

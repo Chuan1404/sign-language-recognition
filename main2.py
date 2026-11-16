@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import DEVICE, ROOT, set_seed
+from config import DEVICE, ROOT, load_model_kwargs, set_seed
 from src.data.WSASL_mesh_raw import WLASLMeshDataset, collate_mesh
 from src.models import ISLR_Transformer_Mesh
 from src.utils.fuse_mesh_component import NUM_JOINTS
@@ -36,10 +36,10 @@ def default_args():
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--top_k", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--d_model", type=int, default=256)
-    parser.add_argument("--num_encoder_layers", type=int, default=3)
-    parser.add_argument("--nhead", type=int, default=8)
-    parser.add_argument("--max_seq_len", type=int, default=5000)
+    parser.add_argument("--d_model", type=int)
+    parser.add_argument("--num_encoder_layers", type=int)
+    parser.add_argument("--nhead", type=int)
+    parser.add_argument("--max_seq_len", type=int)
     parser.add_argument("--no_cache", action="store_true")
     return parser
 
@@ -81,9 +81,11 @@ def main(args):
     loaders = [DataLoader(dataset, batch_size=args.batch_size, shuffle=(i == 0),
                           collate_fn=collate_mesh, num_workers=0,
                           pin_memory=DEVICE.type == "cuda") for i, dataset in enumerate(datasets)]
-    model_kwargs = dict(num_classes=len(datasets[0].gloss2idx), num_nodes=NUM_JOINTS, d_model=args.d_model,
-                        num_encoder_layers=args.num_encoder_layers, nhead=args.nhead,
-                        max_seq_len=args.max_seq_len)
+    model_kwargs = load_model_kwargs(
+        ISLR_Transformer_Mesh, len(datasets[0].gloss2idx), NUM_JOINTS,
+        d_model=args.d_model, num_encoder_layers=args.num_encoder_layers,
+        nhead=args.nhead, max_seq_len=args.max_seq_len,
+    )
     model = ISLR_Transformer_Mesh(**model_kwargs).to(DEVICE)
     print(f"Device: {DEVICE}; parameters: {sum(p.numel() for p in model.parameters()):,}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
